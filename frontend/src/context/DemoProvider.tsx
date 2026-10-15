@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useState, type PropsWithChildren } from 'react';
 import { demoProfile, initialBalancePaise, initialNotifications, initialTransactions } from '../data/demo';
 import type { DemoNotification, DemoProfile, DemoTransaction, NewDemoPayment } from '../types';
+import { useAuth } from './AuthContext';
 
 export interface DemoPreferences {
   inAppAlerts: boolean;
@@ -30,9 +31,15 @@ const makeId = (): string =>
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 
 export function DemoProvider({ children }: PropsWithChildren) {
+  const { user } = useAuth();
   const [balancePaise, setBalancePaise] = useState(initialBalancePaise);
   const [transactions, setTransactions] = useState(initialTransactions);
-  const [profile, setProfile] = useState<DemoProfile>(demoProfile);
+  const [demoUpiId, setDemoUpiId] = useState(demoProfile.upiId);
+  const profile = useMemo<DemoProfile>(() => ({
+    name: user?.full_name ?? demoProfile.name,
+    email: user?.email ?? demoProfile.email,
+    upiId: demoUpiId,
+  }), [user, demoUpiId]);
   const [notifications, setNotifications] = useState(initialNotifications);
   const [preferences, setPreferences] = useState<DemoPreferences>({ inAppAlerts: true, maskBalance: false });
 
@@ -73,7 +80,7 @@ export function DemoProvider({ children }: PropsWithChildren) {
     return transaction;
   }, [balancePaise, preferences.inAppAlerts]);
 
-  const updateProfile = useCallback((nextProfile: DemoProfile) => setProfile(nextProfile), []);
+  const updateProfile = useCallback((nextProfile: DemoProfile) => setDemoUpiId(nextProfile.upiId), []);
   const updatePreferences = useCallback((updates: Partial<DemoPreferences>) => {
     setPreferences((current) => ({ ...current, ...updates }));
   }, []);

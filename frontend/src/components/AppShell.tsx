@@ -1,7 +1,10 @@
-import { useEffect } from 'react';
-import { Bell, CircleHelp, House, ReceiptText, ScanLine, Send, Settings2, Smartphone, WalletCards } from 'lucide-react';
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Bell, CircleHelp, House, LogOut, ReceiptText, ScanLine, Send, Settings2, Smartphone, WalletCards } from 'lucide-react';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { apiErrorMessage } from '../api/auth';
+import { useAuth } from '../context/AuthContext';
 import { useDemo } from '../context/DemoProvider';
+import { useToast } from '../context/ToastProvider';
 import { Brand } from './Brand';
 import { ProfileAvatar } from './Avatar';
 
@@ -54,8 +57,24 @@ function SidebarLinks() {
 
 export default function AppShell() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { profile, notifications } = useDemo();
+  const { signOut } = useAuth();
+  const { showToast } = useToast();
+  const [signingOut, setSigningOut] = useState(false);
   const unreadCount = notifications.filter((item) => !item.read).length;
+
+  const handleSignOut = async () => {
+    setSigningOut(true);
+    try {
+      await signOut();
+      navigate('/login', { replace: true });
+    } catch (error) {
+      showToast(apiErrorMessage(error, 'Could not sign out. Please try again.'), 'error');
+    } finally {
+      setSigningOut(false);
+    }
+  };
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
@@ -83,7 +102,7 @@ export default function AppShell() {
           </div>
           <Link to="/profile" className="sidebar-profile">
             <ProfileAvatar profile={profile} />
-            <span className="sidebar-profile-copy"><strong>{profile.name}</strong><small>Demo account</small></span>
+            <span className="sidebar-profile-copy"><strong>{profile.name}</strong><small>OnePay account</small></span>
             <Settings2 size={17} aria-hidden="true" />
           </Link>
         </div>
@@ -102,6 +121,9 @@ export default function AppShell() {
               <ProfileAvatar profile={profile} size="sm" />
               <span>{profile.name.split(' ')[0]}</span>
             </Link>
+            <button type="button" className="topbar-signout" onClick={() => void handleSignOut()} disabled={signingOut}>
+              <LogOut size={16} aria-hidden="true" />{signingOut ? 'Signing out…' : 'Sign out'}
+            </button>
           </div>
         </header>
 

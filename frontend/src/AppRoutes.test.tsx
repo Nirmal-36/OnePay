@@ -1,18 +1,26 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { DemoProvider } from './context/DemoProvider';
+import { AuthProvider } from './context/AuthContext';
 import { ToastProvider } from './context/ToastProvider';
 import AppRoutes from './AppRoutes';
 
 function renderRoute(path: string) {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ user: { id: 1, email: 'ananya@example.test', full_name: 'Ananya Sharma', date_joined: '2026-10-15T12:00:00Z' } }),
+  }));
   return render(
     <MemoryRouter initialEntries={[path]}>
-      <DemoProvider>
-        <ToastProvider>
-          <AppRoutes />
-        </ToastProvider>
-      </DemoProvider>
+      <AuthProvider>
+        <DemoProvider>
+          <ToastProvider>
+            <AppRoutes />
+          </ToastProvider>
+        </DemoProvider>
+      </AuthProvider>
     </MemoryRouter>,
   );
 }
@@ -35,6 +43,7 @@ describe('application routes', () => {
 
   it('navigates to Send money from the main navigation', async () => {
     renderRoute('/');
+    await screen.findByRole('heading', { name: /Good (morning|afternoon|evening), Ananya/ });
     const mainNav = screen.getByRole('navigation', { name: 'Main navigation' });
     fireEvent.click(within(mainNav).getByRole('link', { name: /Send money/ }));
     expect(await screen.findByRole('heading', { name: 'Send money' })).toBeInTheDocument();

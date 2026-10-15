@@ -6,7 +6,7 @@ import { Button, SelectInput, TextInput } from '../components/Controls';
 import { PageHeader } from '../components/PageHeader';
 
 const faqs = [
-  { id: 'demo', question: 'Are any payments real?', answer: 'No. OnePay Phase 1 is a front-end-only demo. Confirming a payment updates fictional funds and an in-memory activity list only. No bank, UPI network, or provider is contacted.' },
+  { id: 'demo', question: 'Are any payments real?', answer: 'No. OnePay account authentication is server-backed, but all balances and payment activity are simulated. Confirming a payment updates fictional funds and an in-memory activity list only. No bank, UPI network, or provider is contacted.' },
   { id: 'upi', question: 'Does a UPI ID check confirm the recipient?', answer: 'No. We only check whether the text resembles a UPI ID, such as name@bank. It does not confirm that the ID exists, belongs to the person shown, or can receive money.' },
   { id: 'qr', question: 'What happens when I scan a QR code?', answer: 'The page reads QR text in your browser and accepts a supported demo payment request or a syntactically valid UPI ID. You can review the details, but nothing is paid automatically.' },
   { id: 'data', question: 'Where is my information saved?', answer: 'Demo profile edits, balance changes, notifications, and transactions live only in the current page session. Reloading the page resets them. Do not enter sensitive or real banking information.' },

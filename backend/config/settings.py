@@ -2,6 +2,8 @@ import os
 import secrets
 from pathlib import Path
 
+from corsheaders.defaults import default_headers
+
 import dj_database_url
 from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
@@ -44,6 +46,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "apps.accounts.apps.AccountsConfig",
+    "apps.payments.apps.PaymentsConfig",
 ]
 
 MIDDLEWARE = [
@@ -105,6 +108,7 @@ REST_FRAMEWORK = {
         "auth_login": "5/minute",
         "auth_password_reset": "3/hour",
         "auth_password_reset_confirm": "5/hour",
+        "payment_create": "30/hour",
     },
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "EXCEPTION_HANDLER": "config.exceptions.api_exception_handler",
@@ -124,6 +128,7 @@ CORS_ALLOWED_ORIGINS = env_list(
     "http://localhost:5173,http://127.0.0.1:5173",
 )
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
 CORS_URLS_REGEX = r"^/api/.*$"
 CSRF_TRUSTED_ORIGINS = env_list(
     "CSRF_TRUSTED_ORIGINS",

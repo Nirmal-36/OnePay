@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ArrowRight, ArrowUpRight, Bell, Bolt, CircleHelp, Eye, EyeOff,
   Flame, Plus, QrCode, ReceiptText, ShieldCheck, Smartphone, Sparkles, Tv, WalletCards, Waves, Wifi,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { billServices, demoRecipients } from '../data/demo';
+import { billServices } from '../data/demo';
 import { useDemo } from '../context/DemoProvider';
 import { useToast } from '../context/ToastProvider';
 import { formatRupees, type DemoTransaction } from '../types';
@@ -28,20 +28,31 @@ const quickActions = [
 ];
 
 export default function HomePage() {
-  const { profile, balancePaise, transactions, addDemoFunds, preferences, updatePreferences } = useDemo();
+  const { profile, balancePaise, transactions, recipients, addDemoFunds, preferences, updatePreferences, paymentDataLoading } = useDemo();
   const { showToast } = useToast();
   const balanceHidden = preferences.maskBalance;
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [selectedTopUp, setSelectedTopUp] = useState(100_000);
+  const [topUpProcessing, setTopUpProcessing] = useState(false);
+  const topUpKey = useRef<string | null>(null);
   const [selectedTransaction, setSelectedTransaction] = useState<DemoTransaction | null>(null);
 
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
   const todayLabel = new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date());
 
-  const confirmTopUp = () => {
-    addDemoFunds(selectedTopUp);
-    setTopUpOpen(false);
-    showToast(`${formatRupees(selectedTopUp)} in demo funds added.`, 'success');
+  const confirmTopUp = async () => {
+    setTopUpProcessing(true);
+    topUpKey.current ??= typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `topup-${Date.now()}-${Math.random()}`;
+    try {
+      await addDemoFunds(selectedTopUp, topUpKey.current);
+      topUpKey.current = null;
+      setTopUpOpen(false);
+      showToast(`${formatRupees(selectedTopUp)} in simulated funds added.`, 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not add demo funds. Retry the same request.', 'error');
+    } finally {
+      setTopUpProcessing(false);
+    }
   };
 
   return (
@@ -71,10 +82,10 @@ export default function HomePage() {
                 <span>{balanceHidden ? 'Show' : 'Hide'}</span>
               </button>
             </div>
-            <div className="balance-number">{balanceHidden ? '••••••••' : formatRupees(balancePaise)}</div>
-            <p className="balance-caption"><span className="balance-status-dot" />Simulated funds · no real money</p>
+            <div className="balance-number">{balanceHidden ? '••••••••' : paymentDataLoading ? 'Loading…' : formatRupees(balancePaise)}</div>
+            <p className="balance-caption"><span className="balance-status-dot" />Server-validated simulated funds · no real money</p>
             <div className="balance-card-bottom">
-              <span className="balance-footnote">Your in-app demo balance</span>
+              <span className="balance-footnote">Your OnePay demo balance</span>
               <Button variant="balance-light" size="sm" icon={<Plus size={16} />} onClick={() => setTopUpOpen(true)}>Add demo funds</Button>
             </div>
           </section>
@@ -98,18 +109,18 @@ export default function HomePage() {
           <section className="card people-card" aria-labelledby="people-title">
             <div className="section-heading">
               <div><h2 id="people-title">People</h2><p>Send a demo payment to someone you know.</p></div>
-              <Link to="/send" className="text-link">See all <ArrowRight size={15} /></Link>
+              <Link to="/recipients" className="text-link">Manage <ArrowRight size={15} /></Link>
             </div>
             <div className="people-row">
-              {demoRecipients.map((recipient) => (
+              {recipients.slice(0, 5).map((recipient) => (
                 <Link key={recipient.id} to="/send" state={{ recipient }} className="person-item" aria-label={`Send to ${recipient.name}`}>
                   <span className={`person-avatar person-${recipient.color}`}><Avatar name={recipient.name} size="lg" /></span>
                   <span className="person-name">{recipient.name.split(' ')[0]}</span>
                   <span className="person-upi">{recipient.upiId.split('@')[0]}</span>
                 </Link>
               ))}
-              <Link to="/send" className="person-item person-add">
-                <span className="person-add-circle"><Plus size={21} /></span><span className="person-name">New</span><span className="person-upi">UPI ID</span>
+              <Link to="/recipients" className="person-item person-add">
+                <span className="person-add-circle"><Plus size={21} /></span><span className="person-name">New</span><span className="person-upi">Recipient</span>
               </Link>
             </div>
           </section>
@@ -158,11 +169,11 @@ export default function HomePage() {
         </aside>
       </div>
 
-      <Modal open={topUpOpen} title="Add demo funds" subtitle="This only changes the simulated balance on this screen." onClose={() => setTopUpOpen(false)} size="sm"
-        footer={<><Button variant="secondary" onClick={() => setTopUpOpen(false)}>Cancel</Button><Button onClick={confirmTopUp} icon={<Plus size={16} />}>Add demo funds</Button></>}>
-        <div className="demo-warning"><span className="warning-badge">DEMO ONLY</span><p>No bank or payment provider is connected. These funds are fictional and will reset when you reload.</p></div>
+      <Modal open={topUpOpen} title="Add demo funds" subtitle="The OnePay server records this as a simulated wallet credit." onClose={() => { if (!topUpProcessing) setTopUpOpen(false); }} size="sm"
+        footer={<><Button variant="secondary" onClick={() => setTopUpOpen(false)} disabled={topUpProcessing}>Cancel</Button><Button onClick={confirmTopUp} busy={topUpProcessing} icon={<Plus size={16} />}>{topUpProcessing ? 'Adding…' : 'Add demo funds'}</Button></>}>
+        <div className="demo-warning"><span className="warning-badge">DEMO ONLY</span><p>No bank or payment provider is connected. These funds are fictional and stored only in your OnePay demo ledger.</p></div>
         <div className="topup-amount-options" role="group" aria-label="Choose demo funds amount">
-          {[50_000, 100_000, 200_000].map((amount) => <button type="button" key={amount} className={`amount-option ${selectedTopUp === amount ? 'selected' : ''}`} onClick={() => setSelectedTopUp(amount)}>{formatRupees(amount)}</button>)}
+          {[10_000, 50_000, 100_000, 250_000].map((amount) => <button type="button" key={amount} disabled={Boolean(topUpKey.current) && selectedTopUp !== amount} className={`amount-option ${selectedTopUp === amount ? 'selected' : ''}`} onClick={() => setSelectedTopUp(amount)}>{formatRupees(amount)}</button>)}
         </div>
       </Modal>
       <TransactionReceipt transaction={selectedTransaction} onClose={() => setSelectedTransaction(null)} />

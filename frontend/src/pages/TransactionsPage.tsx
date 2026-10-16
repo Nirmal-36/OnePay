@@ -28,12 +28,12 @@ export default function TransactionsPage() {
 
   return (
     <>
-      <PageHeader eyebrow="YOUR ACTIVITY" title="Transaction history" description="A transparent record of this session’s simulated payments and bill activity." />
+      <PageHeader eyebrow="YOUR ACTIVITY" title="Transaction history" description="A persistent, account-scoped record of your simulated OnePay payments and bill activity." />
 
       <div className="transaction-summary-grid">
         <div className="card summary-tile"><span className="summary-tile-icon summary-tile-violet"><WalletCards size={18} /></span><span>Demo balance</span><strong>{formatRupees(balancePaise)}</strong><small>Fictional funds only</small></div>
-        <div className="card summary-tile"><span className="summary-tile-icon summary-tile-green"><ArrowDownLeft size={18} /></span><span>Demo received</span><strong>{formatRupees(transactions.filter((tx) => tx.direction === 'credit').reduce((sum, tx) => sum + tx.amountPaise, 0))}</strong><small>Across this demo session</small></div>
-        <div className="card summary-tile"><span className="summary-tile-icon summary-tile-orange"><ArrowUpRight size={18} /></span><span>Demo activity</span><strong>{transactions.length}</strong><small>Simulated entries</small></div>
+        <div className="card summary-tile"><span className="summary-tile-icon summary-tile-green"><ArrowDownLeft size={18} /></span><span>Demo received</span><strong>{formatRupees(transactions.filter((tx) => tx.direction === 'credit').reduce((sum, tx) => sum + tx.amountPaise, 0))}</strong><small>Credits in the demo ledger</small></div>
+        <div className="card summary-tile"><span className="summary-tile-icon summary-tile-orange"><ArrowUpRight size={18} /></span><span>Demo activity</span><strong>{transactions.length}</strong><small>Server-recorded entries</small></div>
       </div>
 
       <section className="card transaction-history-card">
@@ -50,7 +50,7 @@ export default function TransactionsPage() {
         {filteredTransactions.length > 0 ? <TransactionList transactions={filteredTransactions} onSelect={setSelectedTransaction} /> : <EmptyState title="No matching activity" description={transactions.length ? 'Try another search or clear your filters.' : 'Demo activity will appear here when you try a payment.'} icon={Clock3} action={<button type="button" className="text-link" onClick={clearFilters}>Clear filters <span aria-hidden="true">→</span></button>} />}
       </section>
 
-      <div className="history-footnote"><span className="history-footnote-dot" />This history is local demo data. It is not a bank statement or proof of payment.<Link to="/help">Learn more</Link></div>
+      <div className="history-footnote"><span className="history-footnote-dot" />This is a OnePay simulated ledger, not a bank statement or proof of a real payment.<Link to="/help">Learn more</Link></div>
       <TransactionReceipt transaction={selectedTransaction} onClose={() => setSelectedTransaction(null)} />
     </>
   );

@@ -36,9 +36,9 @@ export function TransactionList({ transactions, onSelect, compact = false }: {
           </span>
           <span className="transaction-meta">
             <strong className={transaction.direction === 'credit' ? 'amount-credit' : ''}>
-              {transaction.direction === 'credit' ? '+' : '−'}{formatRupees(transaction.amountPaise)}
+              {transaction.status === 'failed' ? 'Not debited' : `${transaction.direction === 'credit' ? '+' : '−'}${formatRupees(transaction.amountPaise)}`}
             </strong>
-            <span>{transaction.status === 'pending' ? 'Demo · pending' : transaction.status === 'failed' ? 'Demo · not completed' : formatRelativeDate(transaction.createdAt)}</span>
+            <span>{transaction.status === 'pending' ? 'Demo · pending' : transaction.status === 'failed' ? 'Demo · failed' : transaction.status === 'reversed' ? 'Demo · reversed' : formatRelativeDate(transaction.createdAt)}</span>
           </span>
         </button>
       ))}

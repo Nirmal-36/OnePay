@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bell, CircleHelp, House, LogOut, ReceiptText, ScanLine, Send, Settings2, Smartphone, WalletCards } from 'lucide-react';
+import { Bell, CircleHelp, House, LogOut, ReceiptText, ScanLine, Send, Settings2, ShieldCheck, Smartphone, UsersRound, WalletCards } from 'lucide-react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { apiErrorMessage } from '../api/auth';
 import { useAuth } from '../context/AuthContext';
@@ -11,6 +11,7 @@ import { ProfileAvatar } from './Avatar';
 const primaryLinks = [
   { to: '/', label: 'Home', icon: House, end: true },
   { to: '/send', label: 'Send money', icon: Send },
+  { to: '/recipients', label: 'Recipients', icon: UsersRound },
   { to: '/scan', label: 'Scan QR', icon: ScanLine },
   { to: '/transactions', label: 'Transactions', icon: ReceiptText },
   { to: '/bills', label: 'Recharge & bills', icon: Smartphone },
@@ -28,7 +29,10 @@ const titleForPath = (path: string): string => {
   if (path === '/') return 'Your home';
   if (path.startsWith('/send')) return 'Send money';
   if (path.startsWith('/scan')) return 'Scan & pay';
+  if (path.endsWith('/receipt')) return 'Transaction receipt';
+  if (path.startsWith('/transactions/') && path !== '/transactions') return 'Transaction details';
   if (path.startsWith('/transactions')) return 'Transaction history';
+  if (path.startsWith('/recipients')) return 'Manage recipients';
   if (path.startsWith('/bills')) return 'Recharge & bills';
   if (path.startsWith('/profile')) return 'Your profile';
   if (path.startsWith('/notifications')) return 'Notifications';
@@ -58,7 +62,7 @@ function SidebarLinks() {
 export default function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { profile, notifications } = useDemo();
+  const { profile, notifications, paymentDataError, refreshPaymentData } = useDemo();
   const { signOut } = useAuth();
   const { showToast } = useToast();
   const [signingOut, setSigningOut] = useState(false);
@@ -136,6 +140,8 @@ export default function AppShell() {
         </header>
 
         <main id="main-content" className="page-container">
+          <div className="persistent-demo-notice" role="note"><ShieldCheck size={17} /><span><strong>OnePay demo only.</strong> All balances and payments are simulated; no real UPI transfer or funds movement occurs.</span></div>
+          {paymentDataError && <div className="payment-data-error" role="alert"><span>{paymentDataError}</span><button type="button" onClick={() => { void refreshPaymentData().catch(() => undefined); }}>Retry</button></div>}
           <Outlet />
         </main>
 

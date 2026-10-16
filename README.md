@@ -2,7 +2,7 @@
 
 OnePay is an original, responsive fintech demo with real OnePay account authentication and **simulated payment activity**. It does not connect to a bank, UPI network, or payment provider, and it never moves real money. Never enter or store a real banking PIN, password, OTP, or card security code.
 
-Account registration, sign-in, profile name updates, sign-out, and password reset are handled by the Django API. Server-side sessions use HttpOnly cookies with CSRF protection; the `Secure` cookie flag is enabled for HTTPS deployments by default. The frontend does not store authentication tokens or financial data in browser storage. Demo balances, transactions, preferences, and UPI-format examples remain in memory and reset when the page is reloaded.
+Account registration, sign-in, profile name updates, sign-out, and password reset are handled by the Django API. Server-side sessions use HttpOnly cookies with CSRF protection; the `Secure` cookie flag is enabled for HTTPS deployments by default. The frontend does not store authentication tokens or financial data in browser storage. Wallet balances, recipients, transaction history, ledger entries, and receipts are stored and validated by the backend; display preferences and notifications remain in memory.
 
 ## Development setup
 
@@ -30,7 +30,7 @@ Choose a local PostgreSQL password and use the same value for `POSTGRES_PASSWORD
 docker compose up -d db
 ```
 
-If you already run PostgreSQL locally, create a database/user matching `.env` instead. Then apply the initial custom-user migration, create an administrative account if desired, and start Django:
+If you already run PostgreSQL locally, create a database/user matching `.env` instead. Then apply all account and payments migrations, create an administrative account if desired, and start Django:
 
 ```bash
 .venv/bin/python manage.py migrate
@@ -65,6 +65,40 @@ Base path: `/api/v1/auth/`
 - `POST password-reset/` and `POST password-reset/confirm/` — request a non-enumerating reset email and consume its one-time link
 
 Unsafe requests require CSRF tokens. Protected endpoints require a valid Django session. Registration, login, and password reset use server-side validation and scoped rate limits. Do not add banking PINs, OTPs, bank passwords, card security codes, or real payment details to this demo.
+
+## Simulated payments and ledger API
+
+Base path: `/api/v1/payments/`. Every endpoint requires the authenticated Django session; unsafe requests also require the CSRF header. Amounts are integer INR paise (`amount_minor`), and the server fixes currency to `INR`. The browser never supplies an authoritative balance.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET wallet/` | Read the authenticated user's balance and currency. A first request creates a server-side demo wallet with ₹24,580.00 and an opening ledger entry. |
+| `GET recipients/`, `POST recipients/` | List or add private demo contacts. Only built-in sample handles and mock `@onepay` / `@mock` identifiers are accepted. |
+| `GET recipients/lookup/?identifier=...` | Resolve an owned recipient ID or supported mock UPI ID; no external UPI directory is queried. |
+| `GET recipients/{id}/`, `PATCH recipients/{id}/`, `DELETE recipients/{id}/` | Read, edit, or soft-delete an authenticated user's own contact. |
+| `GET transactions/?limit=50` | List the authenticated user's latest transactions (limit 1–100). |
+| `POST transactions/` | Initiate a transfer, bill payment, or recharge. Requires an `Idempotency-Key` header. |
+| `GET transactions/{reference}/` | Read transaction details and status history, scoped to its sender. |
+| `GET transactions/{reference}/status/` | Read the current status and timestamps. |
+| `GET transactions/{reference}/receipt/` | Return the transaction details and an explicit simulated-receipt notice. |
+| `POST transactions/{reference}/reverse/` | Reverse an eligible successful transaction and credit its demo debit back. Requires an `Idempotency-Key`. |
+| `POST wallet/topups/` | Add one of the allowed fictional wallet amounts (₹100, ₹250, ₹500, ₹1,000, or ₹2,500). Requires an `Idempotency-Key`. |
+
+Example transfer request:
+
+```http
+POST /api/v1/payments/transactions/
+Idempotency-Key: 4dd8a752-a620-4c39-9f43-eaa0f7aaf18d
+Content-Type: application/json
+
+{"kind":"transfer","recipient_id":1,"amount_minor":12500,"note":"Lunch"}
+```
+
+A transfer can use either an owned `recipient_id` or a supported `upi_id`. Bill/recharge requests use `kind` (`bill` or `recharge`), a supported `service`, `amount_minor`, and an optional `recipient_reference`; only a masked suffix is stored for the recipient reference. Payment amounts must be positive and cannot exceed ₹50,000. Recipients and all transaction/status/receipt/history queries are owner-scoped. Reusing an idempotency key with the same request returns the original transaction; using it for a different request returns HTTP 409.
+
+The backend records sender/recipient snapshots, a unique `OPW-…` reference, INR amount, timestamps, status history, audit events, and signed wallet-ledger entries. Wallet updates, transaction creation, and ledger writes occur atomically. Production databases use user/wallet row locks (`select_for_update`) to serialize balance operations; the SQLite test configuration adds an in-process per-user lock because SQLite ignores row locks. Check constraints prevent negative balances, and unique ledger/idempotency constraints prevent repeated debits or credits.
+
+Supported states are `pending`, `successful`, `failed`, and `reversed`. The local processor is deterministic and contacts no service: ordinary mock handles succeed; `fail@onepay` (or `decline@onepay`) demonstrates failure/refund; `pending@onepay` (or `timeout@mock`) demonstrates a processor outage/pending state. A retry with the same idempotency key can resume a pending simulated operation. Top-ups are fictional ledger credits only. No real UPI transfer, bank lookup, biller call, or money collection is made, and the UI/API never request a UPI PIN, OTP, password, or card security code.
 
 ## Checks
 

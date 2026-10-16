@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, BadgeCheck, Bolt, Check, CircleAlert, Flame, Smartphone, Tv, Waves, Wifi } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { billServices, billerOptions, savedBillers, type BillServiceId } from '../data/demo';
+import { ApiError, apiErrorMessage } from '../api/auth';
 import { useDemo } from '../context/DemoProvider';
 import { useToast } from '../context/ToastProvider';
 import { formatRupees, type DemoTransaction } from '../types';
@@ -19,7 +20,7 @@ const allowedServices = billServices.map((service) => service.id) as string[];
 const readService = (value: string | null): BillServiceId => allowedServices.includes(value ?? '') ? value as BillServiceId : 'mobile';
 
 export default function BillsPage() {
-  const { balancePaise, recordDemoPayment } = useDemo();
+  const { balancePaise, recordDemoPayment, paymentDataLoading } = useDemo();
   const { showToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -32,6 +33,9 @@ export default function BillsPage() {
   const [planModalOpen, setPlanModalOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [requestUncertain, setRequestUncertain] = useState(false);
+  const [requestError, setRequestError] = useState('');
+  const requestKey = useRef<string | null>(null);
   const [successTransaction, setSuccessTransaction] = useState<DemoTransaction | null>(null);
 
   const serviceInfo = billServices.find((item) => item.id === service)!;
@@ -39,7 +43,14 @@ export default function BillsPage() {
   const isMobile = service === 'mobile';
   const suggestions = isMobile || service === 'dth' ? [199, 299, 499] : [500, 1000, 1500];
 
+  const resetRequest = () => {
+    if (requestUncertain) return;
+    requestKey.current = null;
+    setRequestError('');
+  };
+
   const changeService = (nextService: BillServiceId) => {
+    resetRequest();
     setService(nextService);
     setSearchParams({ service: nextService }, { replace: true });
     setBiller(billerOptions[nextService][0]);
@@ -48,6 +59,7 @@ export default function BillsPage() {
   };
 
   const fillSavedBiller = (saved: (typeof savedBillers)[number]) => {
+    resetRequest();
     changeService(saved.service);
     setSubscriber(saved.identifier);
     setBiller(saved.biller);
@@ -63,8 +75,8 @@ export default function BillsPage() {
     }
     if (!biller) nextErrors.biller = 'Choose a demo provider.';
     if (!Number.isFinite(amountPaise) || amountPaise <= 0) nextErrors.amount = 'Enter an amount greater than ₹0.';
-    else if (amountPaise > balancePaise) nextErrors.amount = 'This is more than your available demo balance.';
-    else if (amountPaise > 10_000_000) nextErrors.amount = 'For this demo, use an amount of ₹1,00,000 or less.';
+    else if (!paymentDataLoading && amountPaise > balancePaise) nextErrors.amount = 'This is more than your available demo balance.';
+    else if (amountPaise > 5_000_000) nextErrors.amount = 'For this demo, use an amount of ₹50,000 or less.';
     setErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
   };
@@ -76,28 +88,45 @@ export default function BillsPage() {
 
   const confirmPayment = async () => {
     setProcessing(true);
-    await new Promise((resolve) => window.setTimeout(resolve, 400));
+    requestKey.current ??= typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `onepay-bill-${Date.now()}-${Math.random()}`;
     try {
-      const maskedIdentifier = isMobile ? `ending ${subscriber.replace(/\D/g, '').slice(-4)}` : subscriber.trim();
-      const transaction = recordDemoPayment({
-        title: `Demo ${serviceInfo.label}`,
-        subtitle: `${serviceInfo.shortLabel} · ${maskedIdentifier}`,
+      const transaction = await recordDemoPayment({
+        kind: service === 'mobile' || service === 'dth' ? 'recharge' : 'bill',
+        service,
+        recipientReference: subscriber.trim(),
         amountPaise,
-        category: service === 'mobile' || service === 'dth' ? 'recharge' : 'bill',
+        idempotencyKey: requestKey.current,
       });
+      requestKey.current = null;
+      setRequestUncertain(false);
+      setRequestError('');
       setReviewOpen(false);
       setSuccessTransaction(transaction);
       setSubscriber('');
       setAmount('');
-      showToast('Demo bill activity recorded. No provider was contacted.', 'success');
+      if (transaction.status === 'failed') showToast('The demo simulator declined this activity; the balance was refunded.', 'error');
+      else if (transaction.status === 'pending') showToast('This activity is pending in the demo simulator.', 'info');
+      else showToast('Demo bill activity recorded. No provider was contacted.', 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not record this demo activity.', 'error');
+      const uncertain = error instanceof ApiError && error.status === 0;
+      setRequestUncertain(uncertain);
+      const message = apiErrorMessage(error, 'Could not record this demo activity. Retry the same request.');
+      setRequestError(uncertain ? `${message} Retry with the same details to safely check the request.` : message);
+      showToast(message, 'error');
     } finally {
       setProcessing(false);
     }
   };
 
+  const closeReview = () => {
+    if (processing || requestUncertain) return;
+    setReviewOpen(false);
+    requestKey.current = null;
+    setRequestError('');
+  };
+
   const onPlanSelected = (value: number) => {
+    resetRequest();
     setAmount(String(value));
     setErrors((current) => ({ ...current, amount: undefined }));
     setPlanModalOpen(false);
@@ -115,15 +144,15 @@ export default function BillsPage() {
         <section className="card bill-form-card">
           <div className="bill-form-heading"><span className={`bill-heading-icon bill-heading-${service}`}>{serviceIcon(service)}</span><div><h2>{serviceInfo.shortLabel}</h2><p>{serviceInfo.detail} · simulated only</p></div></div>
           <form onSubmit={onSubmit} noValidate>
-            <SelectInput label="Demo provider" id="bill-provider" name="biller" value={biller} error={errors.biller} onChange={(event) => { setBiller(event.target.value); setErrors((current) => ({ ...current, biller: undefined })); }}>
+            <SelectInput label="Demo provider" id="bill-provider" name="biller" value={biller} error={errors.biller} onChange={(event) => { resetRequest(); setBiller(event.target.value); setErrors((current) => ({ ...current, biller: undefined })); }}>
               <option value="">Choose a provider</option>
               {billerOptions[service].map((option) => <option key={option} value={option}>{option}</option>)}
             </SelectInput>
-            <TextInput label={isMobile ? 'Mobile number' : 'Consumer / subscriber ID'} id="bill-subscriber" name="subscriber" type="tel" inputMode={isMobile ? 'numeric' : 'text'} autoComplete="off" value={subscriber} onChange={(event) => { setSubscriber(event.target.value); setErrors((current) => ({ ...current, subscriber: undefined })); }} placeholder={isMobile ? '10-digit demo number' : 'e.g. EB-483920'} hint={isMobile ? 'Enter a fictional 10-digit number for this demo.' : 'Use a fictional demo consumer ID.'} error={errors.subscriber} />
+            <TextInput label={isMobile ? 'Mobile number' : 'Consumer / subscriber ID'} id="bill-subscriber" name="subscriber" type="tel" inputMode={isMobile ? 'numeric' : 'text'} autoComplete="off" value={subscriber} onChange={(event) => { resetRequest(); setSubscriber(event.target.value); setErrors((current) => ({ ...current, subscriber: undefined })); }} placeholder={isMobile ? '10-digit demo number' : 'e.g. EB-483920'} hint={isMobile ? 'Enter a fictional 10-digit number for this demo.' : 'Use a fictional demo consumer ID.'} error={errors.subscriber} />
             <div className="bill-amount-label"><span className="field-label">{isMobile || service === 'dth' ? 'Recharge amount' : 'Bill amount'}</span>{(isMobile || service === 'dth') && <button type="button" className="text-link" onClick={() => setPlanModalOpen(true)}>Browse demo plans <ArrowRight size={14} /></button>}</div>
             <div className="field amount-field">
-              <div className="amount-input-wrap"><span>₹</span><input id="bill-amount" name="amount" type="number" inputMode="decimal" min="0.01" max="100000" step="0.01" value={amount} onChange={(event) => { setAmount(event.target.value); setErrors((current) => ({ ...current, amount: undefined })); }} placeholder="0.00" aria-label="Amount in rupees" aria-invalid={Boolean(errors.amount)} aria-describedby={errors.amount ? 'bill-amount-error' : 'bill-amount-hint'} /></div>
-              {errors.amount ? <span className="field-error" id="bill-amount-error">{errors.amount}</span> : <span className="field-hint" id="bill-amount-hint">Available demo funds: {formatRupees(balancePaise)}</span>}
+              <div className="amount-input-wrap"><span>₹</span><input id="bill-amount" name="amount" type="number" inputMode="decimal" min="0.01" max="50000" step="0.01" value={amount} onChange={(event) => { resetRequest(); setAmount(event.target.value); setErrors((current) => ({ ...current, amount: undefined })); }} placeholder="0.00" aria-label="Amount in rupees" aria-invalid={Boolean(errors.amount)} aria-describedby={errors.amount ? 'bill-amount-error' : 'bill-amount-hint'} /></div>
+              {errors.amount ? <span className="field-error" id="bill-amount-error">{errors.amount}</span> : <span className="field-hint" id="bill-amount-hint">{paymentDataLoading ? 'Loading server balance…' : `Available demo funds: ${formatRupees(balancePaise)}`}</span>}
             </div>
             <div className="amount-suggestions" aria-label="Suggested demo amounts">{suggestions.map((value) => <button type="button" key={value} onClick={() => onPlanSelected(value)}>₹{value.toLocaleString('en-IN')}</button>)}</div>
             <div className="demo-inline-notice"><BadgeCheck size={17} /><p><strong>Demo provider.</strong> No provider is contacted and no real recharge or bill payment is made.</p></div>
@@ -146,15 +175,16 @@ export default function BillsPage() {
         <div className="demo-plan-list">{suggestions.map((value, index) => <button type="button" key={value} className="demo-plan-option" onClick={() => onPlanSelected(value)}><span><strong>Demo plan {index + 1}</strong><small>{index === 0 ? 'Everyday essentials' : index === 1 ? 'Extra data & talktime' : 'More room to explore'}</small></span><strong>{formatRupees(value * 100)}</strong><ArrowRight size={16} /></button>)}</div>
       </Modal>
 
-      <Modal open={reviewOpen} title="Review demo payment" subtitle="Check your details before recording this local simulation." onClose={() => setReviewOpen(false)} size="sm"
-        footer={<><Button variant="secondary" onClick={() => setReviewOpen(false)}>Go back</Button><Button onClick={confirmPayment} busy={processing} icon={<Check size={16} />}>{processing ? 'Recording…' : 'Confirm demo payment'}</Button></>}>
-        <div className="demo-warning"><span className="warning-badge">SIMULATION</span><p>No service provider will be contacted. Confirming only updates your demo activity.</p></div>
+      <Modal open={reviewOpen} title="Review demo payment" subtitle="Check your details before recording this local simulation." onClose={closeReview} size="sm"
+        footer={<><Button variant="secondary" onClick={closeReview} disabled={processing || requestUncertain}>Go back</Button><Button onClick={() => void confirmPayment()} busy={processing} icon={<Check size={16} />}>{processing ? 'Processing…' : requestUncertain ? 'Retry same request' : 'Confirm demo payment'}</Button></>}>
+        <div className="demo-warning"><span className="warning-badge">SIMULATION</span><p>No service provider will be contacted. The OnePay backend records only simulated ledger activity.</p></div>
+        {requestError && <div className="inline-api-error" role="alert"><CircleAlert size={17} /><span>{requestError}</span></div>}
         <div className="review-bill-details"><div><span>Service</span><strong>{serviceInfo.shortLabel}</strong></div><div><span>Demo provider</span><strong>{biller}</strong></div><div><span>Account</span><strong>{isMobile ? `•••• ${subscriber.replace(/\D/g, '').slice(-4)}` : subscriber}</strong></div><div className="review-bill-total"><span>Demo amount</span><strong>{formatRupees(amountPaise)}</strong></div></div>
       </Modal>
 
-      <Modal open={Boolean(successTransaction)} title="Demo activity recorded" subtitle="This is not a real recharge or bill payment." onClose={() => setSuccessTransaction(null)} size="sm"
-        footer={<><Button variant="secondary" onClick={() => setSuccessTransaction(null)}>Done</Button><Button onClick={() => { setSuccessTransaction(null); navigate('/transactions'); }} icon={<ArrowRight size={16} />}>View activity</Button></>}>
-        {successTransaction && <div className="success-summary"><span className="success-large-icon"><Check size={28} /></span><strong className="success-summary-amount">−{formatRupees(successTransaction.amountPaise)}</strong><span className="success-summary-to">{successTransaction.title}</span><div className="success-demo-label"><CircleAlert size={16} /><span>Simulated only · no provider was contacted</span></div><span className="success-reference">Demo reference: {successTransaction.reference}</span></div>}
+      <Modal open={Boolean(successTransaction)} title={successTransaction?.status === 'failed' ? 'Demo activity failed' : successTransaction?.status === 'pending' ? 'Demo activity pending' : 'Demo activity recorded'} subtitle={successTransaction?.status === 'failed' ? 'The simulator refunded the demo debit.' : 'This is not a real recharge or bill payment.'} onClose={() => setSuccessTransaction(null)} size="sm"
+        footer={<><Button variant="secondary" onClick={() => setSuccessTransaction(null)}>Done</Button><Button onClick={() => { const reference = successTransaction?.reference; setSuccessTransaction(null); if (reference) navigate(`/transactions/${encodeURIComponent(reference)}`); }} icon={<ArrowRight size={16} />}>View details</Button></>}>
+        {successTransaction && <div className="success-summary"><span className="success-large-icon">{successTransaction.status === 'failed' ? <CircleAlert size={26} /> : <Check size={28} />}</span><strong className="success-summary-amount">{successTransaction.status === 'failed' ? 'Not debited' : `−${formatRupees(successTransaction.amountPaise)}`}</strong><span className="success-summary-to">{successTransaction.title}{successTransaction.subtitle ? ` · ${successTransaction.subtitle}` : ''}</span><div className="success-demo-label"><CircleAlert size={16} /><span>Simulated only · no provider was contacted</span></div><span className="success-reference">OnePay reference: {successTransaction.reference}</span></div>}
       </Modal>
     </>
   );

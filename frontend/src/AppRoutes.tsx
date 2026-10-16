@@ -12,6 +12,9 @@ const HomePage = lazy(() => import('./pages/HomePage'));
 const SendMoneyPage = lazy(() => import('./pages/SendMoneyPage'));
 const ScanQrPage = lazy(() => import('./pages/ScanQrPage'));
 const TransactionsPage = lazy(() => import('./pages/TransactionsPage'));
+const TransactionDetailPage = lazy(() => import('./pages/TransactionDetailPage'));
+const TransactionReceiptPage = lazy(() => import('./pages/TransactionReceiptPage'));
+const RecipientsPage = lazy(() => import('./pages/RecipientsPage'));
 const BillsPage = lazy(() => import('./pages/BillsPage'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 const NotificationsPage = lazy(() => import('./pages/NotificationsPage'));
@@ -38,6 +41,9 @@ export default function AppRoutes() {
             <Route path="/send" element={<SendMoneyPage />} />
             <Route path="/scan" element={<ScanQrPage />} />
             <Route path="/transactions" element={<TransactionsPage />} />
+            <Route path="/transactions/:reference/receipt" element={<TransactionReceiptPage />} />
+            <Route path="/transactions/:reference" element={<TransactionDetailPage />} />
+            <Route path="/recipients" element={<RecipientsPage />} />
             <Route path="/bills" element={<BillsPage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/notifications" element={<NotificationsPage />} />

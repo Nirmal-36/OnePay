@@ -6,10 +6,10 @@ import { Button, SelectInput, TextInput } from '../components/Controls';
 import { PageHeader } from '../components/PageHeader';
 
 const faqs = [
-  { id: 'demo', question: 'Are any payments real?', answer: 'No. OnePay account authentication is server-backed, but all balances and payment activity are simulated. Confirming a payment updates fictional funds and an in-memory activity list only. No bank, UPI network, or provider is contacted.' },
-  { id: 'upi', question: 'Does a UPI ID check confirm the recipient?', answer: 'No. We only check whether the text resembles a UPI ID, such as name@bank. It does not confirm that the ID exists, belongs to the person shown, or can receive money.' },
-  { id: 'qr', question: 'What happens when I scan a QR code?', answer: 'The page reads QR text in your browser and accepts a supported demo payment request or a syntactically valid UPI ID. You can review the details, but nothing is paid automatically.' },
-  { id: 'data', question: 'Where is my information saved?', answer: 'Demo profile edits, balance changes, notifications, and transactions live only in the current page session. Reloading the page resets them. Do not enter sensitive or real banking information.' },
+  { id: 'demo', question: 'Are any payments real?', answer: 'No. OnePay account authentication and the demo ledger are backend-backed, but all balances and payment activity are fictional. Confirming a payment updates only your simulated OnePay wallet and transaction history. No bank, UPI network, or bill provider is contacted.' },
+  { id: 'upi', question: 'Does a mock UPI ID check confirm the recipient?', answer: 'No. OnePay resolves only saved sample contacts and supported @onepay or @mock handles inside its own demo data. It does not query a bank or UPI directory, or confirm that a real person can receive money.' },
+  { id: 'qr', question: 'What happens when I scan a QR code?', answer: 'The page reads QR text in your browser and accepts supported OnePay demo handles. You can review the recipient and amount before asking the backend to record a simulated transaction; nothing is paid automatically.' },
+  { id: 'data', question: 'Where is my information saved?', answer: 'Your demo wallet balance, saved mock recipients, and transaction ledger are stored by the authenticated OnePay backend. Display preferences and notifications stay in memory. The browser does not store banking credentials or financial account data. Do not enter real or sensitive information.' },
   { id: 'secrets', question: 'Does OnePay need my banking PIN, password, OTP, or card security code?', answer: 'No. Never provide those details to this demo—or to anyone claiming to represent it. Those inputs are not requested or stored.' },
 ];
 

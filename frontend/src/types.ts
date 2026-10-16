@@ -1,6 +1,6 @@
 export type TransactionCategory = 'transfer' | 'recharge' | 'bill' | 'topup';
 export type TransactionDirection = 'debit' | 'credit';
-export type DemoTransactionStatus = 'complete' | 'pending' | 'failed';
+export type DemoTransactionStatus = 'successful' | 'pending' | 'failed' | 'reversed';
 
 export interface DemoTransaction {
   id: string;
@@ -12,6 +12,8 @@ export interface DemoTransaction {
   category: TransactionCategory;
   status: DemoTransactionStatus;
   createdAt: string;
+  recipientIdentifier?: string;
+  currency?: 'INR';
 }
 
 export interface DemoRecipient {
@@ -20,6 +22,7 @@ export interface DemoRecipient {
   upiId: string;
   initials: string;
   color: string;
+  isDefault?: boolean;
 }
 
 export interface DemoProfile {
@@ -39,11 +42,14 @@ export interface DemoNotification {
 }
 
 export interface NewDemoPayment {
-  title: string;
-  subtitle: string;
   amountPaise: number;
-  category: Exclude<TransactionCategory, 'topup'>;
-  direction?: TransactionDirection;
+  kind: 'transfer' | 'bill' | 'recharge';
+  idempotencyKey: string;
+  recipientId?: string;
+  upiId?: string;
+  note?: string;
+  service?: string;
+  recipientReference?: string;
 }
 
 export const isValidUpiId = (value: string): boolean =>

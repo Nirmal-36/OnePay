@@ -35,8 +35,9 @@ let csrfToken: string | null = null;
 let csrfRequest: Promise<string> | null = null;
 
 type RequestOptions = {
-  method?: 'GET' | 'POST' | 'PATCH';
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
+  headers?: Record<string, string>;
 };
 
 async function decodeResponse<T>(response: Response): Promise<T> {
@@ -79,7 +80,7 @@ async function getCsrfToken(): Promise<string> {
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? 'GET';
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = { Accept: 'application/json', ...options.headers };
   const init: RequestInit = { method, credentials: 'include', headers };
   if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -119,6 +120,35 @@ export const authApi = {
   confirmPasswordReset: (data: { uid: string; token: string; new_password: string; confirm_password: string }) =>
     request<{ message: string }>('password-reset/confirm/', { method: 'POST', body: data }),
 };
+
+export async function paymentRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const method = options.method ?? 'GET';
+  const headers: Record<string, string> = { Accept: 'application/json', ...options.headers };
+  const init: RequestInit = { method, credentials: 'include', headers };
+  if (options.body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(options.body);
+  }
+  if (method !== 'GET') headers['X-CSRFToken'] = await getCsrfToken();
+
+  let response: Response;
+  try {
+    const normalizedPath = path.startsWith('/') ? path.slice(1) : path;
+    response = await fetch(`/api/v1/${normalizedPath}`, init);
+  } catch {
+    throw new ApiError('Could not connect to OnePay. Check your connection and try again.');
+  }
+
+  const payload = await decodeResponse<T & ApiErrorBody>(response);
+  if (!response.ok) {
+    throw new ApiError(
+      payload.error?.message ?? 'Something went wrong. Please try again.',
+      response.status,
+      payload.error?.details,
+    );
+  }
+  return payload;
+}
 
 export function apiErrorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback;

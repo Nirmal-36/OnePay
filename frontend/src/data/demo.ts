@@ -1,6 +1,4 @@
-import type { DemoNotification, DemoRecipient, DemoTransaction } from '../types';
-
-export const initialBalancePaise = 2_458_000;
+import type { DemoNotification } from '../types';
 
 export const demoProfile = {
   name: 'Ananya Sharma',
@@ -8,38 +6,7 @@ export const demoProfile = {
   upiId: 'ananya@onepay',
 };
 
-export const demoRecipients: DemoRecipient[] = [
-  { id: 'rec-1', name: 'Rohan Mehta', upiId: 'rohan@okaxis', initials: 'RM', color: 'lavender' },
-  { id: 'rec-2', name: 'Kavya Iyer', upiId: 'kavya@okhdfcbank', initials: 'KI', color: 'peach' },
-  { id: 'rec-3', name: 'Arjun Rao', upiId: 'arjun@okicici', initials: 'AR', color: 'mint' },
-  { id: 'rec-4', name: 'Meera Nair', upiId: 'meera@oksbi', initials: 'MN', color: 'blue' },
-  { id: 'rec-5', name: 'Dev Patel', upiId: 'dev@okaxis', initials: 'DP', color: 'rose' },
-];
-
 const demoDate = (hoursAgo: number): string => new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString();
-
-export const initialTransactions: DemoTransaction[] = [
-  {
-    id: 'demo-tx-01', reference: 'ONEPAY-DEMO-10482', title: 'Rohan Mehta', subtitle: 'Lunch · rohan@okaxis',
-    amountPaise: 1_240_00, direction: 'debit', category: 'transfer', status: 'complete', createdAt: demoDate(1),
-  },
-  {
-    id: 'demo-tx-02', reference: 'ONEPAY-DEMO-10479', title: 'Demo Mobile', subtitle: 'Mobile recharge · ending 4821',
-    amountPaise: 2_990_0, direction: 'debit', category: 'recharge', status: 'complete', createdAt: demoDate(5),
-  },
-  {
-    id: 'demo-tx-03', reference: 'ONEPAY-DEMO-10463', title: 'Kavya Iyer', subtitle: 'Received · kavya@okhdfcbank',
-    amountPaise: 5_000_00, direction: 'credit', category: 'transfer', status: 'complete', createdAt: demoDate(28),
-  },
-  {
-    id: 'demo-tx-04', reference: 'ONEPAY-DEMO-10451', title: 'Demo Electricity', subtitle: 'Home electricity bill · Oct',
-    amountPaise: 1_875_00, direction: 'debit', category: 'bill', status: 'pending', createdAt: demoDate(46),
-  },
-  {
-    id: 'demo-tx-05', reference: 'ONEPAY-DEMO-10432', title: 'Demo Wallet', subtitle: 'Demo funds added',
-    amountPaise: 10_000_00, direction: 'credit', category: 'topup', status: 'complete', createdAt: demoDate(72),
-  },
-];
 
 export const initialNotifications: DemoNotification[] = [
   {

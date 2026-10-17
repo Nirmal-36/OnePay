@@ -22,7 +22,6 @@ interface DemoContextValue {
   refreshPaymentData: () => Promise<void>;
   addDemoFunds: (amountPaise: number, idempotencyKey: string) => Promise<DemoTransaction>;
   recordDemoPayment: (payment: NewDemoPayment) => Promise<DemoTransaction>;
-  reverseDemoPayment: (reference: string, idempotencyKey: string) => Promise<DemoTransaction>;
   addRecipient: (data: { name: string; upiId: string }) => Promise<DemoRecipient>;
   updateRecipient: (id: string, data: { name?: string; upiId?: string }) => Promise<DemoRecipient>;
   removeRecipient: (id: string) => Promise<void>;
@@ -141,13 +140,6 @@ export function DemoProvider({ children }: PropsWithChildren) {
     return transaction;
   }, [preferences.inAppAlerts, refreshPaymentData, upsertTransaction]);
 
-  const reverseDemoPayment = useCallback(async (reference: string, idempotencyKey: string) => {
-    const transaction = await paymentApi.reverse(reference, idempotencyKey);
-    upsertTransaction(transaction);
-    await refreshPaymentData().catch(() => undefined);
-    return transaction;
-  }, [refreshPaymentData, upsertTransaction]);
-
   const addRecipient = useCallback(async (data: { name: string; upiId: string }) => {
     const recipient = await paymentApi.createRecipient({ display_name: data.name, upi_id: data.upiId });
     setRecipients((current) => [...current.filter((item) => item.id !== recipient.id), recipient].sort((a, b) => a.name.localeCompare(b.name)));
@@ -183,11 +175,11 @@ export function DemoProvider({ children }: PropsWithChildren) {
   const value = useMemo(() => ({
     balancePaise, transactions, recipients, profile, notifications, preferences,
     paymentDataLoading, paymentDataError, refreshPaymentData,
-    addDemoFunds, recordDemoPayment, reverseDemoPayment,
+    addDemoFunds, recordDemoPayment,
     addRecipient, updateRecipient, removeRecipient,
     updateProfile, updatePreferences, markNotificationRead, markAllNotificationsRead, clearNotifications,
   }), [balancePaise, transactions, recipients, profile, notifications, preferences,
-    paymentDataLoading, paymentDataError, refreshPaymentData, addDemoFunds, recordDemoPayment, reverseDemoPayment,
+    paymentDataLoading, paymentDataError, refreshPaymentData, addDemoFunds, recordDemoPayment,
     addRecipient, updateRecipient, removeRecipient, updateProfile, updatePreferences,
     markNotificationRead, markAllNotificationsRead, clearNotifications]);
 

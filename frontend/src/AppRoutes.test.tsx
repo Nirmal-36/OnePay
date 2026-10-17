@@ -118,8 +118,9 @@ function installMockApi() {
       if (url.pathname.endsWith('/receipt/')) return jsonResponse(200, { transaction: current, notice: 'This is a OnePay simulated transaction receipt. No real money was transferred.' });
       if (url.pathname.endsWith('/status/')) return jsonResponse(200, { reference, status: current.status, updated_at: now, completed_at: current.completed_at });
       if (url.pathname.endsWith('/reverse/') && method === 'POST') {
-        const reversed = makeTransaction({ ...current, status: 'reversed', updated_at: now, completed_at: now });
-        return jsonResponse(200, reversed);
+        return jsonResponse(403, {
+          detail: 'Customer-initiated transaction reversals are not permitted.',
+        });
       }
       return jsonResponse(200, current);
     }
@@ -266,5 +267,22 @@ describe('application routes', () => {
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Add a demo recipient' })).getByRole('button', { name: 'Add recipient' }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/payments/recipients/') && init?.method === 'POST')).toBe(true));
     expect(await screen.findByText('lee@onepay')).toBeInTheDocument();
+  });
+
+  it('does not offer customer-initiated reversal for a transaction', async () => {
+    const fetchMock = installMockApi();
+    renderRoute('/transactions/OPW-HISTORY-ROHAN');
+
+    await screen.findByRole('heading', { name: 'Transaction details' });
+
+    expect(
+      screen.queryByRole('button', { name: /reverse/i }),
+    ).not.toBeInTheDocument();
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([input]) => String(input).includes('/reverse/'),
+      ),
+    ).toBe(false);
   });
 });

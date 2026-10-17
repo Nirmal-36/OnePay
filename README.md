@@ -81,7 +81,7 @@ Base path: `/api/v1/payments/`. Every endpoint requires the authenticated Django
 | `GET transactions/{reference}/` | Read transaction details and status history, scoped to its sender. |
 | `GET transactions/{reference}/status/` | Read the current status and timestamps. |
 | `GET transactions/{reference}/receipt/` | Return the transaction details and an explicit simulated-receipt notice. |
-| `POST transactions/{reference}/reverse/` | Reverse an eligible successful transaction and credit its demo debit back. Requires an `Idempotency-Key`. |
+| `POST transactions/{reference}/reverse/` | Legacy endpoint retained for compatibility; customer-initiated reversals are forbidden and return HTTP 403. |
 | `POST wallet/topups/` | Add one of the allowed fictional wallet amounts (₹100, ₹250, ₹500, ₹1,000, or ₹2,500). Requires an `Idempotency-Key`. |
 
 Example transfer request:

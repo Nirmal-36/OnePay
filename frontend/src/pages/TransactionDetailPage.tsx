@@ -1,17 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, CircleAlert, Clock3, RotateCcw, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, CircleAlert, Clock3, ShieldCheck } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { paymentApi, type ApiTransaction } from '../api/payments';
 import { apiErrorMessage } from '../api/auth';
-import { useDemo } from '../context/DemoProvider';
-import { useToast } from '../context/ToastProvider';
 import { formatDateTime, formatRupees } from '../types';
 import { Button } from '../components/Controls';
 import { PageHeader } from '../components/PageHeader';
-
-function makeIdempotencyKey() {
-  return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `onepay-reversal-${Date.now()}-${Math.random()}`;
-}
 
 function statusLabel(status: ApiTransaction['status']) {
   return status === 'successful' ? 'Successful' : status === 'pending' ? 'Pending' : status === 'failed' ? 'Failed' : 'Reversed';
@@ -20,12 +14,9 @@ function statusLabel(status: ApiTransaction['status']) {
 export default function TransactionDetailPage() {
   const { reference = '' } = useParams();
   const navigate = useNavigate();
-  const { reverseDemoPayment } = useDemo();
-  const { showToast } = useToast();
   const [transaction, setTransaction] = useState<ApiTransaction | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [reversing, setReversing] = useState(false);
 
   const loadTransaction = useCallback(async () => {
     if (!reference) return;
@@ -43,21 +34,6 @@ export default function TransactionDetailPage() {
   }, [reference]);
 
   useEffect(() => { void loadTransaction(); }, [loadTransaction]);
-
-  const reverse = async () => {
-    if (!transaction) return;
-    setReversing(true);
-    try {
-      await reverseDemoPayment(transaction.reference, makeIdempotencyKey());
-      const refreshed = await paymentApi.transaction(transaction.reference);
-      setTransaction(refreshed);
-      showToast('The simulated payment was reversed. Demo funds were credited back.', 'success');
-    } catch (reverseError) {
-      showToast(apiErrorMessage(reverseError, 'Could not reverse this simulated transaction.'), 'error');
-    } finally {
-      setReversing(false);
-    }
-  };
 
   const amountIsCredit = transaction?.kind === 'topup' || transaction?.status === 'reversed';
 
@@ -80,17 +56,21 @@ export default function TransactionDetailPage() {
                 {transaction.completed_at && <div><dt>Last completed</dt><dd>{formatDateTime(transaction.completed_at)}</dd></div>}
               </dl>
               <div className="transaction-detail-actions">
-                <Button variant="secondary" onClick={() => navigate(`/transactions/${encodeURIComponent(transaction.reference)}/receipt`)} icon={<ArrowRight size={16} />}>View receipt</Button>
-                {transaction.status === 'successful' && transaction.kind !== 'topup' && <Button variant="danger" onClick={() => void reverse()} busy={reversing} icon={<RotateCcw size={16} />}>Reverse demo payment</Button>}
+                <Button
+                  variant="secondary"
+                  onClick={() => navigate(`/transactions/${encodeURIComponent(transaction.reference)}/receipt`)}
+                  icon={<ArrowRight size={16} />}
+                >
+                  View receipt
+                </Button>
               </div>
-              {transaction.status === 'successful' && transaction.kind !== 'topup' && <p className="reverse-disclaimer">Reversing changes only your OnePay demo ledger; no real funds are moved.</p>}
             </section>
 
             <aside className="card transaction-timeline-card">
               <div className="section-heading"><div><h2>Status history</h2><p>Auditable state changes</p></div><Clock3 size={18} /></div>
               <ol className="transaction-timeline">
                 {transaction.status_history.map((event, index) => <li key={`${event.to_status}-${event.created_at}-${index}`} className={`timeline-event status-${event.to_status}`}>
-                  <span className="timeline-dot">{event.to_status === 'successful' || event.to_status === 'reversed'? <Check size={12} /> : event.to_status === 'failed' ? <CircleAlert size={12} /> : null}</span>
+                  <span className="timeline-dot">{event.to_status === 'successful' || event.to_status === 'reversed' ? <Check size={12} /> : event.to_status === 'failed' ? <CircleAlert size={12} /> : null}</span>
                   <div><strong>{statusLabel(event.to_status)}</strong><small>{formatDateTime(event.created_at)}</small>{event.reason && <p>{event.reason}</p>}</div>
                 </li>)}
               </ol>

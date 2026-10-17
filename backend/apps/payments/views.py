@@ -4,7 +4,11 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import AnonRateThrottle, ScopedRateThrottle, UserRateThrottle
+from rest_framework.throttling import (
+    AnonRateThrottle,
+    ScopedRateThrottle,
+    UserRateThrottle,
+)
 from rest_framework.views import APIView
 
 from .models import AuditEvent, PaymentTransaction, Recipient
@@ -22,7 +26,6 @@ from .services import (
     initiate_payment,
     list_recipients,
     lookup_recipient,
-    reverse_transaction,
 )
 
 
@@ -47,7 +50,10 @@ class WalletTopupView(APIView):
             serializer.validated_data["amount_minor"],
             request.headers.get("Idempotency-Key", ""),
         )
-        return Response(PaymentTransactionSerializer(transaction_obj).data, status=status.HTTP_200_OK)
+        return Response(
+            PaymentTransactionSerializer(transaction_obj).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class RecipientViewSet(viewsets.ModelViewSet):
@@ -120,7 +126,9 @@ class RecipientViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=("get",), url_path="lookup")
     def lookup(self, request):
-        recipient = lookup_recipient(request.user, request.query_params.get("identifier", ""))
+        recipient = lookup_recipient(
+            request.user, request.query_params.get("identifier", "")
+        )
         if isinstance(recipient, Recipient):
             return Response(RecipientSerializer(recipient).data)
         return Response(MockRecipientLookupSerializer(recipient).data)
@@ -135,10 +143,16 @@ class TransactionCollectionView(APIView):
         try:
             limit = int(request.query_params.get("limit", "50"))
         except ValueError as exc:
-            raise ValidationError({"limit": ["Enter a whole number between 1 and 100."]}) from exc
+            raise ValidationError(
+                {"limit": ["Enter a whole number between 1 and 100."]}
+            ) from exc
         if not 1 <= limit <= 100:
-            raise ValidationError({"limit": ["Enter a whole number between 1 and 100."]})
-        queryset = PaymentTransaction.objects.filter(sender=request.user).prefetch_related("status_history")[:limit]
+            raise ValidationError(
+                {"limit": ["Enter a whole number between 1 and 100."]}
+            )
+        queryset = PaymentTransaction.objects.filter(
+            sender=request.user
+        ).prefetch_related("status_history")[:limit]
         return Response(PaymentTransactionSerializer(queryset, many=True).data)
 
     def post(self, request):
@@ -149,7 +163,10 @@ class TransactionCollectionView(APIView):
             serializer.validated_data,
             request.headers.get("Idempotency-Key", ""),
         )
-        return Response(PaymentTransactionSerializer(transaction_obj).data, status=status.HTTP_200_OK)
+        return Response(
+            PaymentTransactionSerializer(transaction_obj).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class TransactionDetailView(APIView):
@@ -163,39 +180,44 @@ class TransactionDetailView(APIView):
         )
 
     def get(self, request, reference):
-        return Response(PaymentTransactionSerializer(self.get_object(request, reference)).data)
+        return Response(
+            PaymentTransactionSerializer(self.get_object(request, reference)).data
+        )
 
 
 class TransactionStatusView(TransactionDetailView):
     def get(self, request, reference):
         transaction_obj = self.get_object(request, reference)
-        return Response({
-            "reference": transaction_obj.reference,
-            "status": transaction_obj.status,
-            "updated_at": transaction_obj.updated_at,
-            "completed_at": transaction_obj.completed_at,
-        })
+        return Response(
+            {
+                "reference": transaction_obj.reference,
+                "status": transaction_obj.status,
+                "updated_at": transaction_obj.updated_at,
+                "completed_at": transaction_obj.completed_at,
+            }
+        )
 
 
 class TransactionReceiptView(TransactionDetailView):
     def get(self, request, reference):
         transaction_obj = self.get_object(request, reference)
-        return Response({
-            "transaction": PaymentTransactionSerializer(transaction_obj).data,
-            "notice": "This is a OnePay simulated transaction receipt. No real money was transferred.",
-        })
+        return Response(
+            {
+                "transaction": PaymentTransactionSerializer(transaction_obj).data,
+                "notice": "This is a OnePay simulated transaction receipt. No real money was transferred.",
+            }
+        )
 
 
 class TransactionReverseView(APIView):
+    """Keep the legacy URL, but prevent customer-initiated reversals."""
+
     permission_classes = (IsAuthenticated,)
     throttle_classes = (AnonRateThrottle, UserRateThrottle, ScopedRateThrottle)
     throttle_scope = "payment_create"
 
     def post(self, request, reference):
-        transaction_obj = reverse_transaction(
-            request.user,
-            reference,
-            request.headers.get("Idempotency-Key", ""),
+        return Response(
+            {"detail": "Customer-initiated transaction reversals are not permitted."},
+            status=status.HTTP_403_FORBIDDEN,
         )
-        transaction_obj = PaymentTransaction.objects.prefetch_related("status_history").get(pk=transaction_obj.pk)
-        return Response(PaymentTransactionSerializer(transaction_obj).data)

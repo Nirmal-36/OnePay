@@ -889,7 +889,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .transaction-detail-list dd, .receipt-page-details dd { max-width: 65%; margin: 0; color: #474258; font-size: 9px; font-weight: 650; text-align: right; overflow-wrap: anywhere; }
 .transaction-reference-value { color: #6e4cd4 !important; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8px !important; }
 .transaction-detail-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 18px; }
-.reverse-disclaimer { margin: 11px 0 0; color: #9692a1; font-size: 8px; line-height: 1.5; }
 .transaction-timeline-card { padding: 22px; }
 .transaction-timeline-card .section-heading { align-items: center; }
 .transaction-timeline-card .section-heading > svg { color: #8e7ac3; }

@@ -14,14 +14,20 @@ from apps.payments.models import (
     Wallet,
     WalletLedgerEntry,
 )
-from apps.payments.services import get_or_create_wallet, initiate_payment, list_recipients
+from apps.payments.services import (
+    get_or_create_wallet,
+    initiate_payment,
+    list_recipients,
+)
 
 User = get_user_model()
 BASE = "/api/v1/payments/"
 
 
 def make_user(email="ananya@example.test", full_name="Ananya Sharma"):
-    return User.objects.create_user(email=email, password="OnePay!SecurePass2026", full_name=full_name)
+    return User.objects.create_user(
+        email=email, password="OnePay!SecurePass2026", full_name=full_name
+    )
 
 
 def make_client(user):
@@ -60,14 +66,27 @@ def test_wallet_is_server_initialized_and_recipient_list_is_user_scoped():
     }
     assert len(recipients_response.data) == 5
     assert {item["upi_id"] for item in recipients_response.data} == {
-        "rohan@okaxis", "kavya@okhdfcbank", "arjun@okicici", "meera@oksbi", "dev@okaxis",
+        "rohan@okaxis",
+        "kavya@okhdfcbank",
+        "arjun@okicici",
+        "meera@oksbi",
+        "dev@okaxis",
     }
-    assert WalletLedgerEntry.objects.filter(wallet__user=user, entry_type="opening").count() == 1
+    assert (
+        WalletLedgerEntry.objects.filter(
+            wallet__user=user, entry_type="opening"
+        ).count()
+        == 1
+    )
 
     other = make_user(email="other@example.test", full_name="Other User")
     other_recipients = make_client(other).get(f"{BASE}recipients/")
     assert len(other_recipients.data) == 5
-    assert not Recipient.objects.filter(user=user).filter(pk__in=[item["id"] for item in other_recipients.data]).exists()
+    assert (
+        not Recipient.objects.filter(user=user)
+        .filter(pk__in=[item["id"] for item in other_recipients.data])
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -105,7 +124,9 @@ def test_recipient_lookup_add_edit_and_soft_delete_only_affect_current_user():
     assert client.get(f"{BASE}recipients/{recipient_id}/").status_code == 404
     assert Recipient.objects.get(pk=recipient_id).is_active is False
 
-    stranger = make_client(make_user(email="stranger@example.test", full_name="Stranger"))
+    stranger = make_client(
+        make_user(email="stranger@example.test", full_name="Stranger")
+    )
     assert stranger.get(f"{BASE}recipients/{recipient_id}/").status_code == 404
 
 
@@ -158,8 +179,18 @@ def test_duplicate_request_is_idempotent_and_key_cannot_be_reused_for_new_payloa
     list_recipients(user)
     payload = payment_payload()
 
-    first = client.post(f"{BASE}transactions/", payload, format="json", **headers("duplicate-payment-key-1"))
-    replay = client.post(f"{BASE}transactions/", payload, format="json", **headers("duplicate-payment-key-1"))
+    first = client.post(
+        f"{BASE}transactions/",
+        payload,
+        format="json",
+        **headers("duplicate-payment-key-1"),
+    )
+    replay = client.post(
+        f"{BASE}transactions/",
+        payload,
+        format="json",
+        **headers("duplicate-payment-key-1"),
+    )
     conflict = client.post(
         f"{BASE}transactions/",
         payment_payload(amount_minor=12_500),
@@ -171,7 +202,10 @@ def test_duplicate_request_is_idempotent_and_key_cannot_be_reused_for_new_payloa
     assert first.data["reference"] == replay.data["reference"]
     assert conflict.status_code == 409
     assert PaymentTransaction.objects.filter(sender=user).count() == 1
-    assert WalletLedgerEntry.objects.filter(wallet__user=user, entry_type="debit").count() == 1
+    assert (
+        WalletLedgerEntry.objects.filter(wallet__user=user, entry_type="debit").count()
+        == 1
+    )
     assert Wallet.objects.get(user=user).balance_minor == 2_445_600
 
 
@@ -198,18 +232,34 @@ def test_failed_simulated_payment_refunds_once_and_records_history_and_audit():
     assert response.data["status"] == "failed"
     assert replay.data["reference"] == response.data["reference"]
     assert Wallet.objects.get(user=user).balance_minor == before
-    assert WalletLedgerEntry.objects.filter(transaction__reference=response.data["reference"]).count() == 2
-    assert [item["to_status"] for item in response.data["status_history"]] == ["pending", "failed"]
-    assert AuditEvent.objects.filter(transaction__reference=response.data["reference"]).exists()
+    assert (
+        WalletLedgerEntry.objects.filter(
+            transaction__reference=response.data["reference"]
+        ).count()
+        == 2
+    )
+    assert [item["to_status"] for item in response.data["status_history"]] == [
+        "pending",
+        "failed",
+    ]
+    assert AuditEvent.objects.filter(
+        transaction__reference=response.data["reference"]
+    ).exists()
 
 
 @pytest.mark.django_db
-def test_network_failure_stays_pending_and_same_key_retry_settles_without_second_debit(monkeypatch):
+def test_network_failure_stays_pending_and_same_key_retry_settles_without_second_debit(
+    monkeypatch,
+):
     from apps.payments import services
 
     user = make_user()
     client = make_client(user)
-    payload = {"kind": "transfer", "upi_id": "network.demo@onepay", "amount_minor": 8_000}
+    payload = {
+        "kind": "transfer",
+        "upi_id": "network.demo@onepay",
+        "amount_minor": 8_000,
+    }
 
     def network_error(_transaction):
         raise services.PaymentNetworkError("local simulated outage")
@@ -223,7 +273,11 @@ def test_network_failure_stays_pending_and_same_key_retry_settles_without_second
     )
     debited_balance = Wallet.objects.get(user=user).balance_minor
 
-    monkeypatch.setattr(services, "simulate_payment", lambda _transaction: PaymentTransaction.Status.SUCCESSFUL)
+    monkeypatch.setattr(
+        services,
+        "simulate_payment",
+        lambda _transaction: PaymentTransaction.Status.SUCCESSFUL,
+    )
     settled = client.post(
         f"{BASE}transactions/",
         payload,
@@ -236,7 +290,12 @@ def test_network_failure_stays_pending_and_same_key_retry_settles_without_second
     assert settled.data["status"] == "successful"
     assert settled.data["reference"] == pending.data["reference"]
     assert Wallet.objects.get(user=user).balance_minor == debited_balance
-    assert WalletLedgerEntry.objects.filter(transaction__reference=pending.data["reference"], entry_type="debit").count() == 1
+    assert (
+        WalletLedgerEntry.objects.filter(
+            transaction__reference=pending.data["reference"], entry_type="debit"
+        ).count()
+        == 1
+    )
 
 
 @pytest.mark.django_db
@@ -277,32 +336,56 @@ def test_bill_payment_masks_customer_identifier_and_returns_receipt():
 
 
 @pytest.mark.django_db
-def test_reversal_credits_wallet_once_and_is_available_in_history():
+def test_customer_cannot_reverse_payment_but_internal_service_can():
     user = make_user()
     client = make_client(user)
     balance_before = client.get(f"{BASE}wallet/").data["balance_minor"]
+
     payment = client.post(
         f"{BASE}transactions/",
         payment_payload(amount_minor=25_000),
         format="json",
         **headers("reversible-payment-key-01"),
     )
+
     reversal_path = f"{BASE}transactions/{payment.data['reference']}/reverse/"
-    first = client.post(reversal_path, {}, format="json", **headers("reverse-request-key-001"))
-    replay = client.post(reversal_path, {}, format="json", **headers("reverse-request-key-001"))
-    different_key_attempt = client.post(
-        reversal_path, {}, format="json", **headers("reverse-request-key-002")
+    first = client.post(
+        reversal_path, {}, format="json", **headers("reverse-request-key-001")
     )
     history = client.get(f"{BASE}transactions/")
 
-    assert first.status_code == replay.status_code == 200
-    assert different_key_attempt.status_code == 409
-    assert first.data["status"] == "reversed"
-    assert replay.data["reference"] == payment.data["reference"]
+    assert first.status_code == 403
+    assert history.data[0]["status"] == "successful"
+    assert Wallet.objects.get(user=user).balance_minor == balance_before - 25_000
+    assert not WalletLedgerEntry.objects.filter(
+        transaction__reference=payment.data["reference"],
+        entry_type="reversal_credit",
+    ).exists()
+
+    from apps.payments.services import PaymentConflict, reverse_transaction
+
+    reversed_payment = reverse_transaction(
+        user, payment.data["reference"], "internal-reversal-key-001"
+    )
+    replay = reverse_transaction(
+        user, payment.data["reference"], "internal-reversal-key-001"
+    )
+
+    assert reversed_payment.status == "reversed"
+    assert replay.reference == payment.data["reference"]
     assert Wallet.objects.get(user=user).balance_minor == balance_before
-    assert WalletLedgerEntry.objects.filter(transaction__reference=payment.data["reference"], entry_type="reversal_credit").count() == 1
-    assert [item["to_status"] for item in first.data["status_history"]] == ["pending", "successful", "reversed"]
-    assert history.data[0]["status"] == "reversed"
+    assert (
+        WalletLedgerEntry.objects.filter(
+            transaction__reference=payment.data["reference"],
+            entry_type="reversal_credit",
+        ).count()
+        == 1
+    )
+
+    with pytest.raises(PaymentConflict):
+        reverse_transaction(
+            user, payment.data["reference"], "internal-reversal-key-002"
+        )
 
 
 @pytest.mark.django_db
@@ -316,13 +399,21 @@ def test_transaction_detail_and_receipt_do_not_disclose_another_users_payment():
         format="json",
         **headers("private-payment-key-001"),
     )
-    other_client = make_client(make_user(email="intruder@example.test", full_name="Intruder"))
+    other_client = make_client(
+        make_user(email="intruder@example.test", full_name="Intruder")
+    )
 
     detail = other_client.get(f"{BASE}transactions/{payment.data['reference']}/")
-    status_response = other_client.get(f"{BASE}transactions/{payment.data['reference']}/status/")
-    receipt = other_client.get(f"{BASE}transactions/{payment.data['reference']}/receipt/")
+    status_response = other_client.get(
+        f"{BASE}transactions/{payment.data['reference']}/status/"
+    )
+    receipt = other_client.get(
+        f"{BASE}transactions/{payment.data['reference']}/receipt/"
+    )
 
-    assert detail.status_code == status_response.status_code == receipt.status_code == 404
+    assert (
+        detail.status_code == status_response.status_code == receipt.status_code == 404
+    )
     assert other_client.get(f"{BASE}transactions/").data == []
 
 
@@ -352,13 +443,22 @@ def test_concurrent_payments_cannot_spend_the_same_demo_balance_twice():
             close_old_connections()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(submit, ("concurrent-payment-key-01", "concurrent-payment-key-02")))
+        results = list(
+            executor.map(
+                submit, ("concurrent-payment-key-01", "concurrent-payment-key-02")
+            )
+        )
 
     wallet = Wallet.objects.get(user=user)
-    assert sorted(results) == ["insufficient_balance", PaymentTransaction.Status.SUCCESSFUL]
+    assert sorted(results) == [
+        "insufficient_balance",
+        PaymentTransaction.Status.SUCCESSFUL,
+    ]
     assert wallet.balance_minor == 958_000
     assert PaymentTransaction.objects.filter(sender=user).count() == 1
-    assert WalletLedgerEntry.objects.filter(wallet=wallet, entry_type="debit").count() == 1
+    assert (
+        WalletLedgerEntry.objects.filter(wallet=wallet, entry_type="debit").count() == 1
+    )
 
 
 @pytest.mark.django_db

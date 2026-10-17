@@ -135,9 +135,4 @@ export const paymentApi = {
   receipt: (reference: string) => paymentRequest<ApiReceipt>(
     paymentPath(`transactions/${encodeURIComponent(reference)}/receipt/`),
   ),
-  reverse: async (reference: string, idempotencyKey: string) => mapTransaction(
-    await paymentRequest<ApiTransaction>(paymentPath(`transactions/${encodeURIComponent(reference)}/reverse/`), {
-      method: 'POST', body: {}, headers: { 'Idempotency-Key': idempotencyKey },
-    }),
-  ),
 };

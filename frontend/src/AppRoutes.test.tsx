@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { ApiTransaction } from './api/payments';
+import { BrowserQRCodeReader } from '@zxing/browser';
 import { DemoProvider } from './context/DemoProvider';
 import { AuthProvider } from './context/AuthContext';
 import { ToastProvider } from './context/ToastProvider';
@@ -9,6 +10,7 @@ import AppRoutes from './AppRoutes';
 
 const testUser = { id: 1, email: 'ananya@example.test', full_name: 'Ananya Sharma', date_joined: '2026-10-15T12:00:00Z' };
 const now = '2026-10-15T12:00:00Z';
+const demoQrContent = 'onepay://pay?v=1&upi=user1%40onepay&currency=INR&mode=demo&sig=test-signature';
 const sampleRecipients = [
   ['Rohan Mehta', 'rohan@okaxis'],
   ['Kavya Iyer', 'kavya@okhdfcbank'],
@@ -76,10 +78,36 @@ function installMockApi() {
       recipientStore.push(recipient);
       return jsonResponse(201, recipient);
     }
+    if (url.pathname === '/api/v1/payments/qr/generate/' && method === 'POST') {
+      return jsonResponse(200, {
+        qr_content: demoQrContent,
+        display_name: testUser.full_name,
+        upi_id: `user${testUser.id}@onepay`,
+        currency: 'INR',
+        mode: 'demo',
+      });
+    }
+    if (url.pathname === '/api/v1/payments/qr/resolve/' && method === 'POST') {
+      const data = JSON.parse(String(init?.body ?? '{}')) as { qr_content?: string };
+      if (data.qr_content === demoQrContent) {
+        return jsonResponse(200, {
+          recipient_id: null,
+          display_name: testUser.full_name,
+          upi_id: `user${testUser.id}@onepay`,
+          currency: 'INR',
+          mode: 'demo',
+          verified: true,
+        });
+      }
+      return jsonResponse(400, { error: { status: 400, message: 'This OnePay QR is malformed, unsupported, or has been changed.', details: null } });
+    }
     if (url.pathname === '/api/v1/payments/recipients/lookup/') {
       const upiId = url.searchParams.get('identifier')?.toLowerCase() ?? '';
       const saved = recipientStore.find((recipient) => recipient.upi_id === upiId);
       if (saved) return jsonResponse(200, saved);
+      if (upiId === `user${testUser.id}@onepay`) {
+        return jsonResponse(200, { id: null, display_name: testUser.full_name, upi_id: upiId, is_active: true, is_default: false });
+      }
       if (upiId.endsWith('@onepay') || upiId.endsWith('@mock')) {
         const local = upiId.split('@')[0] ?? 'demo';
         return jsonResponse(200, { id: null, display_name: local.replace(/[._-]/g, ' '), upi_id: upiId, is_active: true, is_default: false });
@@ -88,14 +116,17 @@ function installMockApi() {
     }
     if (url.pathname === '/api/v1/payments/transactions/' && method === 'GET') return jsonResponse(200, transactions);
     if (url.pathname === '/api/v1/payments/transactions/' && method === 'POST') {
-      const data = JSON.parse(String(init?.body ?? '{}')) as { kind: ApiTransaction['kind']; amount_minor: number; upi_id?: string; service?: string; recipient_reference?: string; note?: string };
-      const title = data.kind === 'transfer' ? recipientStore.find((recipient) => recipient.upi_id === data.upi_id)?.display_name ?? data.upi_id ?? 'Demo recipient'
+      const data = JSON.parse(String(init?.body ?? '{}')) as { kind: ApiTransaction['kind']; amount_minor: number; recipient_id?: number; upi_id?: string; qr_content?: string; service?: string; recipient_reference?: string; note?: string };
+      const isQrTransfer = data.qr_content === demoQrContent;
+      const savedRecipient = data.recipient_id ? recipientStore.find((recipient) => recipient.id === data.recipient_id) : undefined;
+      const title = data.kind === 'transfer' ? isQrTransfer ? testUser.full_name : savedRecipient?.display_name ?? recipientStore.find((recipient) => recipient.upi_id === data.upi_id)?.display_name ?? data.upi_id ?? 'Demo recipient'
         : data.kind === 'topup' ? 'OnePay Demo Wallet' : data.service === 'mobile' ? 'Demo Mobile' : `Demo ${data.service ?? 'bill'}`;
+      const identifier = isQrTransfer ? `user${testUser.id}@onepay` : data.upi_id ?? savedRecipient?.upi_id ?? (data.recipient_reference ? `Ending ${data.recipient_reference.replace(/\D/g, '').slice(-4)}` : '');
       const created = makeTransaction({
         id: `tx-${transactions.length + 1}`, reference: `OPW-TEST-${transactions.length + 1}`,
-        recipient_id: data.kind === 'transfer' ? 1 : null,
+        recipient_id: data.kind === 'transfer' ? isQrTransfer ? null : data.recipient_id ?? savedRecipient?.id ?? null : null,
         recipient_name: title,
-        recipient_identifier: data.upi_id ?? (data.recipient_reference ? `Ending ${data.recipient_reference.replace(/\D/g, '').slice(-4)}` : ''),
+        recipient_identifier: identifier,
         kind: data.kind, service: data.service ?? '', note: data.note ?? '', amount_minor: data.amount_minor,
         status: 'successful', status_history: [
           { from_status: null, to_status: 'pending', reason: 'Accepted for demo processing.', created_at: now },
@@ -144,7 +175,7 @@ function renderRoute(path: string) {
   );
 }
 
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('application routes', () => {
   it.each([
@@ -237,14 +268,71 @@ describe('application routes', () => {
     expect((request?.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy();
   });
 
-  it('offers a working demo QR scan result', async () => {
-    installMockApi();
+  it('verifies a signed demo QR but never starts a payment just by scanning', async () => {
+    const fetchMock = installMockApi();
     renderRoute('/scan');
     await screen.findByRole('heading', { name: 'Scan QR' });
-    fireEvent.click(screen.getByRole('button', { name: 'Try a demo QR' }));
-    expect(screen.getByText('QR details read')).toBeInTheDocument();
-    expect(screen.getByText('arjun@okicici')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Try a verified demo QR' }));
+    expect(await screen.findByText('Verified OnePay demo profile · no payment sent')).toBeInTheDocument();
+    expect(screen.getAllByText('Ananya Sharma').length).toBeGreaterThan(0);
+    expect(screen.getByText('user1@onepay')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/payments/transactions/') && init?.method === 'POST')).toBe(false);
+  });
+
+  it('handles camera permission denial and preserves manual recipient verification', async () => {
+    const fetchMock = installMockApi();
+    const testNavigator = Object.assign(Object.create(navigator), { mediaDevices: { getUserMedia: vi.fn() } });
+    vi.stubGlobal('navigator', testNavigator);
+    vi.spyOn(BrowserQRCodeReader.prototype, 'decodeFromVideoDevice').mockRejectedValue(new DOMException('Camera permission denied', 'NotAllowedError'));
+    renderRoute('/scan');
+    await screen.findByRole('heading', { name: 'Scan QR' });
+    fireEvent.click(screen.getByRole('button', { name: 'Start camera' }));
+    expect(await screen.findByText(/Camera permission was declined/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Recipient identifier'), { target: { value: 'user1@onepay' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify recipient' }));
+    expect(await screen.findByText('Ananya Sharma')).toBeInTheDocument();
+    expect(screen.getByText('user1@onepay')).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/payments/transactions/') && init?.method === 'POST')).toBe(false);
+  });
+
+  it('passes a validated QR through review and submits it only after explicit confirmation', async () => {
+    const fetchMock = installMockApi();
+    renderRoute('/scan');
+    await screen.findByRole('heading', { name: 'Scan QR' });
+    fireEvent.click(screen.getByRole('button', { name: 'Try a verified demo QR' }));
+    await screen.findByText('Verified OnePay demo profile · no payment sent');
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByRole('heading', { name: 'Send money' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '50' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Review demo payment' }));
+    const review = await screen.findByRole('dialog', { name: 'Review demo payment' });
+    expect(within(review).getByText('Verified OnePay demo profile')).toBeInTheDocument();
+    expect(within(review).getByText('Ananya Sharma')).toBeInTheDocument();
+    expect(within(review).getByText('user1@onepay')).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/payments/transactions/') && init?.method === 'POST')).toBe(false);
+
+    fireEvent.click(within(review).getByRole('button', { name: 'Confirm demo payment' }));
+    expect(await screen.findByRole('dialog', { name: 'Demo payment recorded' })).toBeInTheDocument();
+    const paymentCall = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/payments/transactions/') && init?.method === 'POST');
+    const payload = JSON.parse(String(paymentCall?.[1]?.body)) as Record<string, unknown>;
+    expect(payload).toMatchObject({ kind: 'transfer', qr_content: demoQrContent, amount_minor: 5_000 });
+    expect(payload).not.toHaveProperty('upi_id');
+    expect(payload).not.toHaveProperty('recipient_id');
+  });
+
+  it('allows cancelling a reviewed payment without initiating a simulator request', async () => {
+    const fetchMock = installMockApi();
+    renderRoute('/send');
+    await screen.findByRole('heading', { name: 'Send money' });
+    fireEvent.change(screen.getByLabelText('Mock UPI ID'), { target: { value: 'rohan@okaxis' } });
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '125' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Review demo payment' }));
+    const review = await screen.findByRole('dialog', { name: 'Review demo payment' });
+    fireEvent.click(within(review).getByRole('button', { name: 'Cancel payment' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Review demo payment' })).not.toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/payments/transactions/') && init?.method === 'POST')).toBe(false);
   });
 
   it('can filter the server-backed transaction history to credits and reversals', async () => {
@@ -261,12 +349,34 @@ describe('application routes', () => {
     const fetchMock = installMockApi();
     renderRoute('/recipients');
     await screen.findByRole('heading', { name: 'Manage recipients' });
+    expect(screen.queryByRole('button', { name: 'Choose from contacts' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add recipient' }));
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Lee Morgan' } });
     fireEvent.change(screen.getByLabelText('Mock UPI ID'), { target: { value: 'lee@onepay' } });
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Add a demo recipient' })).getByRole('button', { name: 'Add recipient' }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/payments/recipients/') && init?.method === 'POST')).toBe(true));
     expect(await screen.findByText('lee@onepay')).toBeInTheDocument();
+  });
+
+  it('opens browser Contacts only after the user opts in and keeps the ID editable', async () => {
+    const fetchMock = installMockApi();
+    const select = vi.fn().mockResolvedValue([{ name: ['Lee Morgan'], email: ['lee@onepay'] }]);
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { contacts: { select } }));
+    renderRoute('/recipients');
+    await screen.findByRole('heading', { name: 'Manage recipients' });
+    const chooseContact = screen.getByRole('button', { name: 'Choose from contacts' });
+    expect(select).not.toHaveBeenCalled();
+    fireEvent.click(chooseContact);
+    const dialog = await screen.findByRole('dialog', { name: 'Add a demo recipient' });
+    expect(select).toHaveBeenCalledWith(['name', 'email'], { multiple: false });
+    expect(screen.getByLabelText('Display name')).toHaveValue('Lee Morgan');
+    expect(screen.getByLabelText('Mock UPI ID')).toHaveValue('lee@onepay');
+    expect(screen.getByText(/Review them before saving/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Mock UPI ID'), { target: { value: 'lee.manual@onepay' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add recipient' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/payments/recipients/') && init?.method === 'POST')).toBe(true));
+    const creation = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/payments/recipients/') && init?.method === 'POST')?.[1];
+    expect(JSON.parse(String(creation?.body))).toEqual({ display_name: 'Lee Morgan', upi_id: 'lee.manual@onepay' });
   });
 
   it('does not offer customer-initiated reversal for a transaction', async () => {

@@ -16,6 +16,31 @@ export interface ApiRecipient {
   updated_at: string;
 }
 
+export interface ApiRecipientLookup {
+  id: number | null;
+  display_name: string;
+  upi_id: string;
+  is_active: boolean;
+  is_default: boolean;
+}
+
+export interface GeneratedDemoQr {
+  qr_content: string;
+  display_name: string;
+  upi_id: string;
+  currency: 'INR';
+  mode: 'demo';
+}
+
+export interface DemoQrResolution {
+  recipient_id: number | null;
+  display_name: string;
+  upi_id: string;
+  currency: 'INR';
+  mode: 'demo';
+  verified: boolean;
+}
+
 export interface ApiStatusEvent {
   from_status: 'pending' | 'successful' | 'failed' | 'reversed' | null;
   to_status: 'pending' | 'successful' | 'failed' | 'reversed';
@@ -90,8 +115,12 @@ function paymentPath(path: string) {
 export const paymentApi = {
   wallet: () => paymentRequest<WalletSnapshot>(paymentPath('wallet/')),
   recipients: async () => (await paymentRequest<ApiRecipient[]>(paymentPath('recipients/'))).map(mapRecipient),
-  lookupRecipient: (identifier: string) => paymentRequest<ApiRecipient | { id: null; display_name: string; upi_id: string; is_active: boolean; is_default: boolean }>(
+  lookupRecipient: (identifier: string) => paymentRequest<ApiRecipientLookup>(
     paymentPath(`recipients/lookup/?identifier=${encodeURIComponent(identifier)}`),
+  ),
+  generateDemoQr: () => paymentRequest<GeneratedDemoQr>(paymentPath('qr/generate/'), { method: 'POST' }),
+  resolveDemoQr: (qrContent: string) => paymentRequest<DemoQrResolution>(
+    paymentPath('qr/resolve/'), { method: 'POST', body: { qr_content: qrContent } },
   ),
   createRecipient: async (data: { display_name: string; upi_id: string }) => mapRecipient(
     await paymentRequest<ApiRecipient>(paymentPath('recipients/'), { method: 'POST', body: data }),
@@ -109,7 +138,8 @@ export const paymentApi = {
       note: payment.note ?? '',
     };
     if (payment.kind === 'transfer') {
-      if (payment.recipientId) body.recipient_id = Number(payment.recipientId);
+      if (payment.qrContent) body.qr_content = payment.qrContent;
+      else if (payment.recipientId) body.recipient_id = Number(payment.recipientId);
       else if (payment.upiId) body.upi_id = payment.upiId;
     } else {
       body.service = payment.service;

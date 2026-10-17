@@ -50,6 +50,7 @@ export interface NewDemoPayment {
   note?: string;
   service?: string;
   recipientReference?: string;
+  qrContent?: string;
 }
 
 export const isValidUpiId = (value: string): boolean =>

@@ -13,6 +13,9 @@ from rest_framework.views import APIView
 
 from .models import AuditEvent, PaymentTransaction, Recipient
 from .serializers import (
+    DemoQrGeneratedSerializer,
+    DemoQrResolutionSerializer,
+    DemoQrResolveSerializer,
     MockRecipientLookupSerializer,
     PaymentInitiationSerializer,
     PaymentTransactionSerializer,
@@ -21,11 +24,14 @@ from .serializers import (
     WalletSerializer,
 )
 from .services import (
+    create_demo_payment_qr,
     create_topup,
     get_or_create_wallet,
     initiate_payment,
     list_recipients,
     lookup_recipient,
+    profile_upi_id,
+    resolve_demo_payment_qr,
 )
 
 
@@ -35,6 +41,31 @@ class WalletView(APIView):
     def get(self, request):
         wallet = get_or_create_wallet(request.user)
         return Response(WalletSerializer(wallet).data)
+
+
+class DemoQrGenerateView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        upi_id = profile_upi_id(request.user)
+        result = DemoQrGeneratedSerializer({
+            "qr_content": create_demo_payment_qr(request.user),
+            "display_name": request.user.full_name,
+            "upi_id": upi_id,
+            "currency": "INR",
+            "mode": "demo",
+        })
+        return Response(result.data, status=status.HTTP_200_OK)
+
+
+class DemoQrResolveView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        serializer = DemoQrResolveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        resolution = resolve_demo_payment_qr(request.user, serializer.validated_data["qr_content"])
+        return Response(DemoQrResolutionSerializer(resolution).data, status=status.HTTP_200_OK)
 
 
 class WalletTopupView(APIView):

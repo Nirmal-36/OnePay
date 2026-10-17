@@ -25,3 +25,5 @@ backend/staticfiles/
 backend/.coverage
 
 .vscode/
+
+.DS_Store

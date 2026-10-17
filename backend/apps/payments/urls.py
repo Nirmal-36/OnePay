@@ -2,6 +2,8 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    DemoQrGenerateView,
+    DemoQrResolveView,
     RecipientViewSet,
     TransactionCollectionView,
     TransactionDetailView,
@@ -17,6 +19,8 @@ router.register("recipients", RecipientViewSet, basename="recipient")
 
 urlpatterns = [
     path("wallet/", WalletView.as_view(), name="wallet"),
+    path("qr/generate/", DemoQrGenerateView.as_view(), name="demo-qr-generate"),
+    path("qr/resolve/", DemoQrResolveView.as_view(), name="demo-qr-resolve"),
     path("wallet/topups/", WalletTopupView.as_view(), name="wallet-topups"),
     path("transactions/", TransactionCollectionView.as_view(), name="transactions"),
     path("transactions/<str:reference>/", TransactionDetailView.as_view(), name="transaction-detail"),

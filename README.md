@@ -74,10 +74,12 @@ Base path: `/api/v1/payments/`. Every endpoint requires the authenticated Django
 | --- | --- |
 | `GET wallet/` | Read the authenticated user's balance and currency. A first request creates a server-side demo wallet with ₹24,580.00 and an opening ledger entry. |
 | `GET recipients/`, `POST recipients/` | List or add private demo contacts. Only built-in sample handles and mock `@onepay` / `@mock` identifiers are accepted. |
-| `GET recipients/lookup/?identifier=...` | Resolve an owned recipient ID or supported mock UPI ID; no external UPI directory is queried. |
+| `GET recipients/lookup/?identifier=...` | Resolve an owned recipient ID or supported mock UPI ID; verified OnePay account IDs resolve to the account's backend profile. No external UPI directory is queried. |
 | `GET recipients/{id}/`, `PATCH recipients/{id}/`, `DELETE recipients/{id}/` | Read, edit, or soft-delete an authenticated user's own contact. |
+| `POST qr/generate/` | Generate a signed INR demo QR for the authenticated OnePay account; the server supplies the account ID and profile name. |
+| `POST qr/resolve/` | Validate the exact OnePay QR format and server signature, then return the backend-verified recipient profile. |
 | `GET transactions/?limit=50` | List the authenticated user's latest transactions (limit 1–100). |
-| `POST transactions/` | Initiate a transfer, bill payment, or recharge. Requires an `Idempotency-Key` header. |
+| `POST transactions/` | Initiate a transfer, bill payment, or recharge. Transfers may use an owned `recipient_id`, supported `upi_id`, or signed `qr_content`. Requires an `Idempotency-Key` header. |
 | `GET transactions/{reference}/` | Read transaction details and status history, scoped to its sender. |
 | `GET transactions/{reference}/status/` | Read the current status and timestamps. |
 | `GET transactions/{reference}/receipt/` | Return the transaction details and an explicit simulated-receipt notice. |
@@ -94,7 +96,9 @@ Content-Type: application/json
 {"kind":"transfer","recipient_id":1,"amount_minor":12500,"note":"Lunch"}
 ```
 
-A transfer can use either an owned `recipient_id` or a supported `upi_id`. Bill/recharge requests use `kind` (`bill` or `recharge`), a supported `service`, `amount_minor`, and an optional `recipient_reference`; only a masked suffix is stored for the recipient reference. Payment amounts must be positive and cannot exceed ₹50,000. Recipients and all transaction/status/receipt/history queries are owner-scoped. Reusing an idempotency key with the same request returns the original transaction; using it for a different request returns HTTP 409.
+A transfer can use an owned `recipient_id`, supported `upi_id`, or the raw signed `qr_content` (exactly one is allowed). OnePay QR payloads use the `onepay://pay` scheme and include only the account's supported OnePay identifier, INR/demo/version fields, and a server HMAC; altered, unsupported, malformed, or unknown account identifiers are rejected both during resolution and again at payment initiation. The QR generator never accepts a client-supplied display name or arbitrary account identifier. Bill/recharge requests use `kind` (`bill` or `recharge`), a supported `service`, `amount_minor`, and an optional `recipient_reference`; only a masked suffix is stored for the recipient reference. Payment amounts must be positive and cannot exceed ₹50,000. Recipients and all transaction/status/receipt/history queries are owner-scoped. Reusing an idempotency key with the same request returns the original transaction; using it for a different request returns HTTP 409.
+
+The scanner requests camera access only after the user selects **Start camera**. If access is denied or unavailable, the same screen supports manual entry of a OnePay demo ID or saved recipient ID. A scan performs backend QR/profile validation but never initiates a payment; the verified recipient and amount are reviewed first, and the user must explicitly confirm. Cancelling the review creates no transaction. The optional browser Contacts Picker is displayed only when supported and is opened only after an explicit click; selected details are prefilled for review and are not saved until the user submits the recipient form. Manual entry remains available in all browsers.
 
 The backend records sender/recipient snapshots, a unique `OPW-…` reference, INR amount, timestamps, status history, audit events, and signed wallet-ledger entries. Wallet updates, transaction creation, and ledger writes occur atomically. Production databases use user/wallet row locks (`select_for_update`) to serialize balance operations; the SQLite test configuration adds an in-process per-user lock because SQLite ignores row locks. Check constraints prevent negative balances, and unique ledger/idempotency constraints prevent repeated debits or credits.
 

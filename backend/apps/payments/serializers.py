@@ -1,7 +1,12 @@
 from rest_framework import serializers
 
 from .models import PaymentTransaction, Recipient, TransactionStatusHistory, Wallet
-from .services import MAX_PAYMENT_MINOR, TOPUP_AMOUNTS_MINOR, validate_mock_upi_id
+from .services import (
+    MAX_PAYMENT_MINOR,
+    TOPUP_AMOUNTS_MINOR,
+    parse_demo_payment_qr,
+    validate_mock_upi_id,
+)
 
 BILL_SERVICES = ("electricity", "water", "gas", "broadband")
 RECHARGE_SERVICES = ("mobile", "dth")
@@ -53,6 +58,31 @@ class MockRecipientLookupSerializer(serializers.Serializer):
     is_default = serializers.BooleanField()
 
 
+class DemoQrResolveSerializer(serializers.Serializer):
+    qr_content = serializers.CharField(max_length=512, allow_blank=False, trim_whitespace=False)
+
+    def validate_qr_content(self, value):
+        parse_demo_payment_qr(value)
+        return value
+
+
+class DemoQrResolutionSerializer(serializers.Serializer):
+    recipient_id = serializers.IntegerField(allow_null=True)
+    display_name = serializers.CharField()
+    upi_id = serializers.CharField()
+    currency = serializers.CharField()
+    mode = serializers.CharField()
+    verified = serializers.BooleanField()
+
+
+class DemoQrGeneratedSerializer(serializers.Serializer):
+    qr_content = serializers.CharField()
+    display_name = serializers.CharField()
+    upi_id = serializers.CharField()
+    currency = serializers.CharField()
+    mode = serializers.CharField()
+
+
 class PaymentInitiationSerializer(serializers.Serializer):
     kind = serializers.ChoiceField(
         choices=(PaymentTransaction.Kind.TRANSFER, PaymentTransaction.Kind.BILL, PaymentTransaction.Kind.RECHARGE)
@@ -60,6 +90,7 @@ class PaymentInitiationSerializer(serializers.Serializer):
     amount_minor = serializers.IntegerField(min_value=1, max_value=MAX_PAYMENT_MINOR)
     recipient_id = serializers.IntegerField(required=False, min_value=1)
     upi_id = serializers.CharField(required=False, max_length=64, allow_blank=False, trim_whitespace=True)
+    qr_content = serializers.CharField(required=False, max_length=512, allow_blank=False, trim_whitespace=False)
     service = serializers.ChoiceField(choices=ALL_SERVICES, required=False)
     recipient_reference = serializers.CharField(required=False, max_length=64, allow_blank=True, trim_whitespace=True)
     note = serializers.CharField(required=False, max_length=80, allow_blank=True, trim_whitespace=True)
@@ -70,16 +101,28 @@ class PaymentInitiationSerializer(serializers.Serializer):
     def validate(self, attrs):
         kind = attrs["kind"]
         if kind == PaymentTransaction.Kind.TRANSFER:
-            if (attrs.get("recipient_id") is None) == (attrs.get("upi_id") is None):
+            recipient_choices = sum((
+                attrs.get("recipient_id") is not None,
+                attrs.get("upi_id") is not None,
+                attrs.get("qr_content") is not None,
+            ))
+            if recipient_choices != 1:
                 raise serializers.ValidationError({
-                    "recipient_id": ["Choose exactly one saved recipient or mock UPI ID."],
-                    "upi_id": ["Choose exactly one saved recipient or mock UPI ID."],
+                    "recipient_id": ["Choose exactly one saved recipient, mock UPI ID, or signed OnePay QR."],
+                    "upi_id": ["Choose exactly one saved recipient, mock UPI ID, or signed OnePay QR."],
+                    "qr_content": ["Choose exactly one saved recipient, mock UPI ID, or signed OnePay QR."],
                 })
+            if attrs.get("qr_content") is not None:
+                parse_demo_payment_qr(attrs["qr_content"])
             if attrs.get("service") or attrs.get("recipient_reference"):
                 raise serializers.ValidationError({"kind": ["Bill or recharge details are not valid for a transfer."]})
         else:
-            if attrs.get("recipient_id") is not None or attrs.get("upi_id"):
-                raise serializers.ValidationError({"recipient_id": ["Recipient IDs are only used for person-to-person transfers."]})
+            if (
+                attrs.get("recipient_id") is not None
+                or attrs.get("upi_id") is not None
+                or attrs.get("qr_content") is not None
+            ):
+                raise serializers.ValidationError({"recipient_id": ["Recipient IDs and OnePay QR data are only used for person-to-person transfers."]})
             service = attrs.get("service")
             if service is None:
                 raise serializers.ValidationError({"service": ["Choose a supported demo bill or recharge service."]})

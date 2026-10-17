@@ -4,12 +4,13 @@ import re
 import threading
 from collections import defaultdict
 from contextlib import contextmanager
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import connection, transaction
 from django.utils import timezone
-from django.utils.crypto import salted_hmac
+from django.utils.crypto import constant_time_compare, salted_hmac
 from rest_framework.exceptions import APIException, NotFound, ValidationError
 
 from .models import (
@@ -35,6 +36,9 @@ DEFAULT_RECIPIENTS = (
 DEFAULT_RECIPIENT_NAMES = {upi_id: name for name, upi_id in DEFAULT_RECIPIENTS}
 MOCK_HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,47}@[a-z0-9][a-z0-9.-]{1,23}$")
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+DEMO_QR_FIELDS = frozenset(("v", "upi", "currency", "mode", "sig"))
+DEMO_QR_SALT = "onepay.demo-payment-qr.v1"
+PROFILE_UPI_RE = re.compile(r"^user(?P<user_id>[1-9][0-9]*)@onepay$")
 
 SERVICE_RECIPIENT_NAMES = {
     "mobile": "Demo Mobile",
@@ -86,6 +90,92 @@ def validate_mock_upi_id(value):
     if value not in DEFAULT_RECIPIENT_NAMES and domain not in {"onepay", "mock"}:
         raise ValidationError({"upi_id": ["Only OnePay demo handles and listed mock UPI IDs are supported."]})
     return value
+
+
+def _application_profile_for_upi_id(upi_id):
+    match = PROFILE_UPI_RE.fullmatch(upi_id)
+    if not match:
+        return None
+    User = get_user_model()
+    try:
+        return User.objects.get(pk=int(match.group("user_id")), is_active=True)
+    except (User.DoesNotExist, ValueError, OverflowError) as exc:
+        raise NotFound("No verified OnePay demo profile matches that identifier.") from exc
+
+
+def _demo_qr_signature(upi_id):
+    signed_fields = f"1|{upi_id}|INR|demo"
+    return salted_hmac(DEMO_QR_SALT, signed_fields, algorithm="sha256").hexdigest()
+
+
+def profile_upi_id(user):
+    """Return the stable OnePay demo handle tied to this authenticated account."""
+    return f"user{user.pk}@onepay"
+
+
+def create_demo_payment_qr(user):
+    """Create a signed QR for the caller's verified account, never an arbitrary handle."""
+    normalized_upi = profile_upi_id(user)
+    query = urlencode((
+        ("v", "1"),
+        ("upi", normalized_upi),
+        ("currency", "INR"),
+        ("mode", "demo"),
+        ("sig", _demo_qr_signature(normalized_upi)),
+    ))
+    return f"onepay://pay?{query}"
+
+
+def parse_demo_payment_qr(value):
+    """Validate the exact OnePay QR format and its server HMAC before use."""
+    def invalid_qr():
+        raise ValidationError({"qr_content": ["This OnePay QR is malformed, unsupported, or has been changed."]})
+
+    if not isinstance(value, str) or not value or len(value) > 512 or value != value.strip():
+        invalid_qr()
+    try:
+        parsed = urlsplit(value)
+        pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True, max_num_fields=8)
+    except (TypeError, ValueError):
+        invalid_qr()
+
+    if parsed.scheme != "onepay" or parsed.netloc != "pay" or parsed.path or parsed.fragment:
+        invalid_qr()
+    if len(pairs) != len(DEMO_QR_FIELDS) or {key for key, _ in pairs} != DEMO_QR_FIELDS:
+        invalid_qr()
+    params = dict(pairs)
+    if params["v"] != "1" or params["currency"] != "INR" or params["mode"] != "demo":
+        invalid_qr()
+    try:
+        upi_id = validate_mock_upi_id(params["upi"])
+    except ValidationError:
+        invalid_qr()
+    if upi_id != params["upi"]:
+        invalid_qr()
+    if not constant_time_compare(params["sig"], _demo_qr_signature(upi_id)):
+        invalid_qr()
+    return {"upi_id": upi_id, "currency": "INR", "mode": "demo", "version": 1}
+
+
+def resolve_demo_payment_qr(user, qr_content):
+    parsed = parse_demo_payment_qr(qr_content)
+    recipient = lookup_recipient(user, parsed["upi_id"])
+    if isinstance(recipient, Recipient):
+        recipient_id = recipient.pk
+        display_name = recipient.display_name
+        upi_id = recipient.upi_id
+    else:
+        recipient_id = None
+        display_name = recipient["display_name"]
+        upi_id = recipient["upi_id"]
+    return {
+        "recipient_id": recipient_id,
+        "display_name": display_name,
+        "upi_id": upi_id,
+        "currency": parsed["currency"],
+        "mode": parsed["mode"],
+        "verified": True,
+    }
 
 
 def _idempotency_key(value):
@@ -164,9 +254,20 @@ def lookup_recipient(user, identifier):
             raise NotFound("No active recipient matches that ID.")
 
     upi_id = validate_mock_upi_id(identifier)
-    recipient = Recipient.objects.filter(user=user, upi_id=upi_id, is_active=True).first()
+    application_profile = _application_profile_for_upi_id(upi_id)
+    if application_profile is not None:
+        return {
+            "id": None,
+            "display_name": application_profile.full_name,
+            "upi_id": upi_id,
+            "is_active": True,
+            "is_default": False,
+        }
+    recipient = Recipient.objects.filter(user=user, upi_id=upi_id).first()
     if recipient:
-        return recipient
+        if recipient.is_active:
+            return recipient
+        raise NotFound("No active recipient matches that UPI ID.")
     display_name = DEFAULT_RECIPIENT_NAMES.get(upi_id)
     if display_name:
         # Defaults are normally seeded above; create a missing row without ever
@@ -204,9 +305,14 @@ def _resolve_payment_recipient(user, payload):
         raise ValidationError({"recipient_id": ["Choose a saved recipient or provide a mock UPI ID."]})
 
     upi_id = validate_mock_upi_id(upi_id)
-    recipient = Recipient.objects.filter(user=user, upi_id=upi_id, is_active=True).first()
+    application_profile = _application_profile_for_upi_id(upi_id)
+    if application_profile is not None:
+        return None, application_profile.full_name, upi_id
+    recipient = Recipient.objects.filter(user=user, upi_id=upi_id).first()
     if recipient:
-        return recipient, recipient.display_name, recipient.upi_id
+        if recipient.is_active:
+            return recipient, recipient.display_name, recipient.upi_id
+        raise ValidationError({"upi_id": ["This recipient is inactive."]})
     display_name = DEFAULT_RECIPIENT_NAMES.get(upi_id)
     if display_name:
         recipient, _ = Recipient.objects.get_or_create(
@@ -364,13 +470,22 @@ def initiate_payment(user, payload, idempotency_key):
     if amount_minor > MAX_PAYMENT_MINOR:
         raise ValidationError({"amount_minor": ["The maximum simulated payment is INR 50,000.00."]})
 
+    qr_content = payload.get("qr_content")
+    if qr_content and kind != PaymentTransaction.Kind.TRANSFER:
+        raise ValidationError({"qr_content": ["OnePay QR data is only valid for a demo transfer."]})
+
     if kind == PaymentTransaction.Kind.TRANSFER:
+        if qr_content:
+            if payload.get("recipient_id") is not None or payload.get("upi_id"):
+                raise ValidationError({"qr_content": ["Use either a OnePay QR or a recipient identifier, not both."]})
+            payload["upi_id"] = parse_demo_payment_qr(qr_content)["upi_id"]
         normalized_upi = validate_mock_upi_id(payload["upi_id"]) if payload.get("upi_id") else None
         fingerprint_payload = {
             "kind": kind,
             "amount_minor": amount_minor,
             "recipient_id": payload.get("recipient_id"),
             "upi_id": normalized_upi,
+            "qr_content": qr_content or "",
             "note": payload.get("note", ""),
         }
     else:

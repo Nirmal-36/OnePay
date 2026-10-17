@@ -15,6 +15,7 @@ import { Modal } from '../components/Modal';
 interface SendForm { upiId: string; amount: string; note: string }
 interface SendErrors { upiId?: string; amount?: string }
 interface ResolvedRecipient { id: number | null; display_name: string; upi_id: string }
+interface SendRouteState { recipient?: Pick<DemoRecipient, 'upiId'>; qrContent?: string }
 
 function makeIdempotencyKey() {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `onepay-${Date.now()}-${Math.random()}`;
@@ -34,15 +35,41 @@ export default function SendMoneyPage() {
   const [requestUncertain, setRequestUncertain] = useState(false);
   const [requestError, setRequestError] = useState('');
   const [resolvedRecipient, setResolvedRecipient] = useState<ResolvedRecipient | null>(null);
+  const [qrContent, setQrContent] = useState<string | null>(null);
   const [successTransaction, setSuccessTransaction] = useState<DemoTransaction | null>(null);
   const requestKey = useRef<string | null>(null);
 
   useEffect(() => {
-    const routeState = location.state as { recipient?: DemoRecipient } | null;
+    let active = true;
+    const routeState = location.state as SendRouteState | null;
     const recipient = routeState?.recipient;
+    const qrFromRoute = routeState?.qrContent;
     const upiFromUrl = searchParams.get('upi');
     if (recipient?.upiId) setForm((current) => ({ ...current, upiId: recipient.upiId }));
     else if (upiFromUrl) setForm((current) => ({ ...current, upiId: upiFromUrl }));
+
+    if (qrFromRoute) {
+      setQrContent(qrFromRoute);
+      setResolvedRecipient(null);
+      setResolvingRecipient(true);
+      paymentApi.resolveDemoQr(qrFromRoute)
+        .then((resolution) => {
+          if (!active) return;
+          if (!resolution.verified || resolution.mode !== 'demo') throw new ApiError('OnePay could not verify this demo payment QR.');
+          setResolvedRecipient({ id: resolution.recipient_id, display_name: resolution.display_name, upi_id: resolution.upi_id });
+          setErrors((current) => ({ ...current, upiId: undefined }));
+        })
+        .catch((error: unknown) => {
+          if (!active) return;
+          setQrContent(null);
+          setResolvedRecipient(null);
+          setErrors((current) => ({ ...current, upiId: apiErrorMessage(error, 'OnePay could not verify this demo QR.') }));
+        })
+        .finally(() => {
+          if (active) setResolvingRecipient(false);
+        });
+    }
+    return () => { active = false; };
   }, [location.state, searchParams]);
 
   const normalizedUpi = form.upiId.trim().toLowerCase();
@@ -59,7 +86,10 @@ export default function SendMoneyPage() {
     }
     setForm((current) => ({ ...current, [field]: value }));
     setErrors((current) => ({ ...current, [field]: undefined }));
-    if (field === 'upiId') setResolvedRecipient(null);
+    if (field === 'upiId') {
+      setResolvedRecipient(null);
+      setQrContent(null);
+    }
   };
 
   const validate = () => {
@@ -77,7 +107,13 @@ export default function SendMoneyPage() {
     if (!validate()) return;
     setResolvingRecipient(true);
     try {
-      if (selectedRecipient) {
+      if (qrContent) {
+        const resolution = await paymentApi.resolveDemoQr(qrContent);
+        if (!resolution.verified || resolution.mode !== 'demo' || resolution.currency !== 'INR') {
+          throw new ApiError('OnePay could not verify this demo payment QR.');
+        }
+        setResolvedRecipient({ id: resolution.recipient_id, display_name: resolution.display_name, upi_id: resolution.upi_id });
+      } else if (selectedRecipient) {
         setResolvedRecipient({ id: Number(selectedRecipient.id), display_name: selectedRecipient.name, upi_id: selectedRecipient.upiId });
       } else {
         const recipient = await paymentApi.lookupRecipient(form.upiId.trim());
@@ -99,8 +135,9 @@ export default function SendMoneyPage() {
     try {
       const transaction = await recordDemoPayment({
         kind: 'transfer',
-        recipientId: displayedRecipient.id === null ? undefined : String(displayedRecipient.id),
-        upiId: displayedRecipient.id === null ? displayedRecipient.upi_id : undefined,
+        recipientId: qrContent ? undefined : displayedRecipient.id === null ? undefined : String(displayedRecipient.id),
+        upiId: qrContent ? undefined : displayedRecipient.id === null ? displayedRecipient.upi_id : undefined,
+        qrContent: qrContent ?? undefined,
         amountPaise,
         note: form.note.trim(),
         idempotencyKey: requestKey.current,
@@ -112,6 +149,7 @@ export default function SendMoneyPage() {
       setSuccessTransaction(transaction);
       setForm({ upiId: '', amount: '', note: '' });
       setResolvedRecipient(null);
+      setQrContent(null);
       if (transaction.status === 'failed') showToast('The simulator declined this payment. Your demo balance was not changed.', 'error');
       else if (transaction.status === 'pending') showToast('This payment is pending in the demo simulator. You can check its status.', 'info');
       else showToast('Demo payment recorded. No money was transferred.', 'success');
@@ -216,10 +254,10 @@ export default function SendMoneyPage() {
       </div>
 
       <Modal open={reviewOpen} title="Review demo payment" subtitle="Please check the details before confirmation." onClose={closeReview} size="sm"
-        footer={<><Button variant="secondary" onClick={closeReview} disabled={processing || requestUncertain} icon={<ArrowLeft size={15} />}>Edit details</Button><Button onClick={() => void confirmPayment()} busy={processing} icon={<Check size={16} />}>{processing ? 'Processing…' : requestUncertain ? 'Retry same request' : 'Confirm demo payment'}</Button></>}>
+        footer={<><Button variant="secondary" onClick={closeReview} disabled={processing || requestUncertain} icon={<ArrowLeft size={15} />}>Cancel payment</Button><Button onClick={() => void confirmPayment()} busy={processing} icon={<Check size={16} />}>{processing ? 'Processing…' : requestUncertain ? 'Retry same request' : 'Confirm demo payment'}</Button></>}>
         <div className="demo-warning"><span className="warning-badge">SIMULATION</span><p>Confirming sends a request to OnePay’s backend ledger only. No actual money moves.</p></div>
         {requestError && <div className="inline-api-error" role="alert"><CircleAlert size={17} /><span>{requestError}</span></div>}
-        <div className="review-recipient"><span className="review-avatar"><Avatar name={displayedRecipient?.display_name ?? form.upiId} size="lg" /></span><div><span>Sending to</span><strong>{displayedRecipient?.display_name ?? form.upiId}</strong><small>{displayedRecipient?.upi_id ?? form.upiId}</small></div></div>
+        <div className="review-recipient"><span className="review-avatar"><Avatar name={displayedRecipient?.display_name ?? form.upiId} size="lg" /></span><div><span>Verified OnePay demo profile</span><strong>{displayedRecipient?.display_name ?? form.upiId}</strong><small>{displayedRecipient?.upi_id ?? form.upiId}</small></div></div>
         <div className="review-amount"><span>Demo amount</span><strong>{formatRupees(amountPaise)}</strong></div>
         {form.note.trim() && <div className="review-note"><span>Note</span><strong>{form.note.trim()}</strong></div>}
         <div className="review-balance"><span>Remaining demo funds</span><strong>{formatRupees(Math.max(0, balancePaise - amountPaise))}</strong></div>

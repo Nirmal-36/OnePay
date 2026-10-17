@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -15,6 +16,7 @@ from apps.payments.models import (
     WalletLedgerEntry,
 )
 from apps.payments.services import (
+    create_demo_payment_qr,
     get_or_create_wallet,
     initiate_payment,
     list_recipients,
@@ -123,11 +125,124 @@ def test_recipient_lookup_add_edit_and_soft_delete_only_affect_current_user():
     assert deleted.status_code == 204
     assert client.get(f"{BASE}recipients/{recipient_id}/").status_code == 404
     assert Recipient.objects.get(pk=recipient_id).is_active is False
+    assert client.get(
+        f"{BASE}recipients/lookup/?identifier=lee.morgan%40onepay"
+    ).status_code == 404
+    removed_payment = client.post(
+        f"{BASE}transactions/",
+        {"kind": "transfer", "upi_id": "lee.morgan@onepay", "amount_minor": 1_000},
+        format="json",
+        **headers("removed-recipient-payment-01"),
+    )
+    assert removed_payment.status_code == 400
 
     stranger = make_client(
         make_user(email="stranger@example.test", full_name="Stranger")
     )
     assert stranger.get(f"{BASE}recipients/{recipient_id}/").status_code == 404
+
+
+@pytest.mark.django_db
+def test_signed_demo_qr_is_resolved_by_backend_and_used_for_simulated_transfer():
+    user = make_user()
+    client = make_client(user)
+    generated = client.post(f"{BASE}qr/generate/", {}, format="json")
+
+    assert generated.status_code == 200
+    qr_content = generated.data["qr_content"]
+    profile_identifier = f"user{user.pk}@onepay"
+    assert qr_content.startswith("onepay://pay?")
+    assert f"user{user.pk}%40onepay" in qr_content
+    assert set(dict(parse_qsl(urlsplit(qr_content).query))) == {
+        "v", "upi", "currency", "mode", "sig"
+    }
+    assert user.full_name not in qr_content
+    assert generated.data["display_name"] == user.full_name
+    assert generated.data["upi_id"] == profile_identifier
+    assert generated.data["mode"] == "demo"
+    assert generated.data["currency"] == "INR"
+
+    caller_supplied_profile = client.post(
+        f"{BASE}qr/generate/",
+        {"upi_id": "user999999@onepay", "display_name": "Unverified name"},
+        format="json",
+    )
+    assert caller_supplied_profile.status_code == 200
+    assert caller_supplied_profile.data["upi_id"] == profile_identifier
+    assert caller_supplied_profile.data["display_name"] == user.full_name
+
+    resolution = client.post(
+        f"{BASE}qr/resolve/",
+        {"qr_content": qr_content},
+        format="json",
+    )
+    assert resolution.status_code == 200
+    assert resolution.data == {
+        "recipient_id": None,
+        "display_name": user.full_name,
+        "upi_id": profile_identifier,
+        "currency": "INR",
+        "mode": "demo",
+        "verified": True,
+    }
+
+    response = client.post(
+        f"{BASE}transactions/",
+        {"kind": "transfer", "qr_content": qr_content, "amount_minor": 12_400},
+        format="json",
+        **headers("signed-demo-qr-payment-01"),
+    )
+    assert response.status_code == 200
+    assert response.data["status"] == "successful"
+    assert response.data["recipient_name"] == user.full_name
+    assert response.data["recipient_identifier"] == profile_identifier
+    assert PaymentTransaction.objects.filter(sender=user).count() == 1
+
+
+@pytest.mark.django_db
+def test_demo_qr_rejects_tampering_malformed_content_and_unsupported_recipients():
+    user = make_user()
+    client = make_client(user)
+    valid_qr = create_demo_payment_qr(user)
+    tampered_qr = valid_qr.replace(
+        f"user{user.pk}%40onepay", "user999999%40onepay"
+    )
+    unsupported_qr = "https://example.test/pay?upi=attacker%40bank"
+    before = client.get(f"{BASE}wallet/").data["balance_minor"]
+
+    tampered_resolution = client.post(
+        f"{BASE}qr/resolve/", {"qr_content": tampered_qr}, format="json"
+    )
+    malformed_resolution = client.post(
+        f"{BASE}qr/resolve/", {"qr_content": "onepay://pay?v=1"}, format="json"
+    )
+    unsupported_resolution = client.post(
+        f"{BASE}qr/resolve/", {"qr_content": unsupported_qr}, format="json"
+    )
+    tampered_payment = client.post(
+        f"{BASE}transactions/",
+        {"kind": "transfer", "qr_content": tampered_qr, "amount_minor": 12_400},
+        format="json",
+        **headers("tampered-demo-qr-payment-01"),
+    )
+    unknown_profile = client.get(
+        f"{BASE}recipients/lookup/?identifier=user999999%40onepay"
+    )
+    unknown_profile_payment = client.post(
+        f"{BASE}transactions/",
+        {"kind": "transfer", "upi_id": "user999999@onepay", "amount_minor": 12_400},
+        format="json",
+        **headers("unknown-profile-payment-01"),
+    )
+
+    assert tampered_resolution.status_code == 400
+    assert malformed_resolution.status_code == 400
+    assert unsupported_resolution.status_code == 400
+    assert tampered_payment.status_code == 400
+    assert unknown_profile.status_code == 404
+    assert unknown_profile_payment.status_code == 404
+    assert PaymentTransaction.objects.filter(sender=user).count() == 0
+    assert Wallet.objects.get(user=user).balance_minor == before
 
 
 @pytest.mark.django_db
@@ -463,5 +578,18 @@ def test_concurrent_payments_cannot_spend_the_same_demo_balance_twice():
 
 @pytest.mark.django_db
 def test_payment_endpoints_require_backend_authentication():
-    response = APIClient().get(f"{BASE}wallet/")
-    assert response.status_code == 401
+    client = APIClient()
+    response = client.get(f"{BASE}wallet/")
+    reversal = client.post(f"{BASE}transactions/OPW-UNKNOWN/reverse/", {}, format="json")
+    qr_generation = client.post(f"{BASE}qr/generate/", {}, format="json")
+    qr_resolution = client.post(f"{BASE}qr/resolve/", {"qr_content": ""}, format="json")
+
+    assert (
+        response.status_code
+        == reversal.status_code
+        == qr_generation.status_code
+        == qr_resolution.status_code
+        == 401
+    )
+    assert response.data["error"]["status"] == 401
+    assert reversal.data["error"]["status"] == 401

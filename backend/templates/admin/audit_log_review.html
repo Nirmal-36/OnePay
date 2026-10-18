@@ -1,0 +1,58 @@
+{% extends "admin/base_site.html" %}
+
+{% block title %}OnePay audit log | {{ site_title }}{% endblock %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <style>
+    .audit-filter { display: flex; gap: 8px; align-items: end; margin: 16px 0; }
+    .audit-filter label { display: grid; gap: 4px; }
+    .audit-table { width: 100%; border-collapse: collapse; }
+    .audit-table th, .audit-table td { border-bottom: 1px solid var(--hairline-color, #ddd); padding: 8px; text-align: left; vertical-align: top; }
+    .audit-pagination { display: flex; gap: 12px; align-items: center; margin: 16px 0; }
+    .audit-metadata { max-width: 440px; overflow-wrap: anywhere; white-space: pre-wrap; }
+  </style>
+{% endblock %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a> &rsaquo;
+    <a href="{% url 'ops-dashboard' %}">Operations dashboard</a> &rsaquo; Audit log
+  </div>
+{% endblock %}
+
+{% block content %}
+  <div id="content-main">
+    <p>Append-only audit review for simulated payment transitions, operational errors, and privileged administrative actions.</p>
+    <form class="audit-filter" method="get" action="{% url 'audit-log-review' %}">
+      <label for="audit-action">Filter by exact action
+        <input id="audit-action" name="action" maxlength="48" value="{{ action_filter }}" autocomplete="off">
+      </label>
+      <button class="button" type="submit">Filter</button>
+      <a href="{% url 'audit-log-review' %}">Clear</a>
+    </form>
+    <p>{{ total }} event{{ total|pluralize }} match this filter.</p>
+    <table class="audit-table">
+      <thead><tr><th>Time</th><th>Action</th><th>Actor ID</th><th>Transaction</th><th>Wallet ID</th><th>Safe metadata</th></tr></thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.event.created_at }}</td>
+            <td>{{ row.event.action }}</td>
+            <td>{{ row.event.actor_id|default:"system" }}</td>
+            <td>{% if row.event.transaction %}<a href="{% url 'ops-dashboard' %}?reference={{ row.event.transaction.reference|urlencode }}">{{ row.event.transaction.reference }}</a>{% else %}—{% endif %}</td>
+            <td>{{ row.event.wallet_id|default:"—" }}</td>
+            <td class="audit-metadata"><code>{{ row.safe_metadata }}</code></td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6">No audit events are available for this filter.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <nav class="audit-pagination" aria-label="Audit log pagination">
+      {% if has_previous %}<a href="?action={{ action_filter|urlencode }}&amp;page={{ previous_page }}">Previous</a>{% endif %}
+      <span>Page {{ page_number }}</span>
+      {% if has_next %}<a href="?action={{ action_filter|urlencode }}&amp;page={{ next_page }}">Next</a>{% endif %}
+    </nav>
+  </div>
+{% endblock %}

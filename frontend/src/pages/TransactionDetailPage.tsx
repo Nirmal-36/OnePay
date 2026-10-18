@@ -56,13 +56,7 @@ export default function TransactionDetailPage() {
                 {transaction.completed_at && <div><dt>Last completed</dt><dd>{formatDateTime(transaction.completed_at)}</dd></div>}
               </dl>
               <div className="transaction-detail-actions">
-                <Button
-                  variant="secondary"
-                  onClick={() => navigate(`/transactions/${encodeURIComponent(transaction.reference)}/receipt`)}
-                  icon={<ArrowRight size={16} />}
-                >
-                  View receipt
-                </Button>
+                <Button variant="secondary" onClick={() => navigate(`/transactions/${encodeURIComponent(transaction.reference)}/receipt`)} icon={<ArrowRight size={16} />}>View receipt</Button>
               </div>
             </section>
 

@@ -4,6 +4,30 @@ from .models import AuditEvent, PaymentTransaction, Recipient, TransactionStatus
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
+    def _record_read(self, request, action, *, transaction_obj=None):
+        AuditEvent.objects.create(
+            actor=request.user,
+            transaction=transaction_obj,
+            action=action,
+            metadata={"request_id": getattr(request, "request_id", "")},
+        )
+
+    def changelist_view(self, request, extra_context=None):
+        if request.method == "GET" and self.has_view_permission(request):
+            self._record_read(request, f"admin.{self.model._meta.model_name}.list_viewed")
+        return super().changelist_view(request, extra_context=extra_context)
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        if request.method == "GET" and self.has_view_permission(request):
+            obj = self.get_object(request, object_id)
+            transaction_obj = obj if isinstance(obj, PaymentTransaction) else None
+            self._record_read(
+                request,
+                f"admin.{self.model._meta.model_name}.detail_viewed",
+                transaction_obj=transaction_obj,
+            )
+        return super().change_view(request, object_id, form_url=form_url, extra_context=extra_context)
+
     def has_add_permission(self, request):
         return False
 
@@ -22,6 +46,7 @@ class WalletAdmin(ReadOnlyAdmin):
 
 @admin.register(PaymentTransaction)
 class PaymentTransactionAdmin(ReadOnlyAdmin):
+    change_list_template = "admin/payments/paymenttransaction/change_list.html"
     list_display = ("reference", "sender", "recipient_name", "amount_minor", "currency", "status", "created_at")
     list_filter = ("status", "kind", "currency", "created_at")
     search_fields = ("reference", "sender__email", "recipient_name", "recipient_identifier")

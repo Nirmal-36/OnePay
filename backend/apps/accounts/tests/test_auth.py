@@ -58,14 +58,22 @@ def test_registration_creates_custom_user_with_hashed_password_and_session():
 
 
 @pytest.mark.django_db
-def test_registration_rejects_mismatched_and_weak_passwords():
+def test_registration_rejects_mismatched_weak_and_oversized_passwords():
     _, mismatch = register(password_confirm="Different!Password2026")
     _, weak = register(email="weak@example.test", password="123", password_confirm="123")
+    oversized_password = "OnePay!" + "x" * 260
+    _, oversized = register(
+        email="oversized@example.test",
+        password=oversized_password,
+        password_confirm=oversized_password,
+    )
 
     assert_api_error(mismatch, status.HTTP_400_BAD_REQUEST)
     assert "password_confirm" in mismatch.data["error"]["details"]
     assert_api_error(weak, status.HTTP_400_BAD_REQUEST)
     assert "password" in weak.data["error"]["details"]
+    assert_api_error(oversized, status.HTTP_400_BAD_REQUEST)
+    assert oversized_password not in str(oversized.data)
 
 
 @pytest.mark.django_db

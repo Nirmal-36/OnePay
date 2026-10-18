@@ -146,7 +146,10 @@ class PasswordResetRequestView(PublicAuthView):
                 fail_silently=True,
             )
             if sent != 1:
-                logger.warning("Password reset email delivery failed for user_id=%s", user.pk)
+                logger.warning(
+                    "password_reset.email_delivery_failed",
+                    extra={"event": "password_reset.email_delivery_failed", "actor_id": user.pk},
+                )
         # Intentionally identical for known and unknown emails to prevent account enumeration.
         return Response({"message": "If an account exists for that email, password-reset instructions have been sent."})
 

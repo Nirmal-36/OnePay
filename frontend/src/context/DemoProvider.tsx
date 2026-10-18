@@ -56,7 +56,6 @@ function transactionBalanceDelta(transaction: DemoTransaction, previous?: DemoTr
     return 0;
   }
   if (previous.status !== 'failed' && transaction.status === 'failed') return transaction.amountPaise;
-  if (previous.status !== 'reversed' && transaction.status === 'reversed') return transaction.amountPaise;
   return 0;
 }
 

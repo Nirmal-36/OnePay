@@ -4,7 +4,7 @@ import uuid
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from apps.payments.models import PaymentTransaction
+from apps.payments.models import AuditEvent, PaymentTransaction
 
 from .models import EVENT_CATEGORY, Notification, NotificationState
 
@@ -83,9 +83,12 @@ def create_notification_safely(**kwargs):
     try:
         return create_notification(**kwargs)
     except Exception:
-        logger.exception(
-            "Could not persist OnePay in-app notification for event_type=%s",
-            kwargs.get("event_type", "unknown"),
+        event_type = kwargs.get("event_type", "unknown")
+        if event_type not in Notification.EventType.values:
+            event_type = "unknown"
+        logger.error(
+            "notification.persistence_failed",
+            extra={"event": "notification.persistence_failed", "event_type": event_type},
         )
         return None
 
@@ -204,8 +207,17 @@ def notify_password_changed(user):
 
 def create_system_announcement(*, created_by, title, message, navigation_target="", event_key=None):
     """Create a single broadcast announcement; per-user read state is stored separately."""
-    if created_by is None or not getattr(created_by, "is_staff", False):
-        raise PermissionError("Only an authorized OnePay staff member may publish an announcement.")
+    authorized = bool(
+        created_by is not None
+        and getattr(created_by, "is_active", False)
+        and getattr(created_by, "is_staff", False)
+        and (
+            getattr(created_by, "is_superuser", False)
+            or created_by.has_perm("notifications.add_notification")
+        )
+    )
+    if not authorized:
+        raise PermissionError("Only an authorized OnePay administrator may publish an announcement.")
     key = (event_key or f"announcement:{uuid.uuid4().hex}").strip()
     notification = Notification(
         recipient=None,
@@ -220,7 +232,14 @@ def create_system_announcement(*, created_by, title, message, navigation_target=
         created_by=created_by,
     )
     notification.full_clean(validate_unique=False, validate_constraints=False)
-    return _persist_notification(notification)
+    with transaction.atomic():
+        stored = _persist_notification(notification)
+        AuditEvent.objects.create(
+            actor=created_by,
+            action="admin.announcement.created",
+            metadata={"notification_id": str(stored.pk)},
+        )
+        return stored
 
 
 def _format_amount(amount_minor):

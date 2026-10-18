@@ -406,17 +406,7 @@ def _existing_idempotent_transaction(user, key, fingerprint):
 
 def _record_status(transaction_obj, to_status, *, actor=None, reason=""):
     from_status = transaction_obj.status
-    transaction_obj.status = to_status
-    if to_status in {PaymentTransaction.Status.SUCCESSFUL, PaymentTransaction.Status.FAILED, PaymentTransaction.Status.REVERSED}:
-        transaction_obj.completed_at = timezone.now()
-    transaction_obj.save(update_fields=("status", "completed_at", "updated_at"))
-    TransactionStatusHistory.objects.create(
-        transaction=transaction_obj,
-        from_status=from_status,
-        to_status=to_status,
-        actor=actor,
-        reason=reason[:120],
-    )
+    transaction_obj.record_status_transition(to_status, actor=actor, reason=reason)
     if from_status != to_status:
         from apps.notifications.services import notify_transaction_status
 

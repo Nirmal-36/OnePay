@@ -72,6 +72,39 @@ export interface ApiReceipt {
   notice: string;
 }
 
+export interface PaymentHistoryFilters {
+  search?: string;
+  status?: ApiTransaction['status'] | 'all';
+  category?: ApiTransaction['kind'] | 'all';
+  direction?: 'debit' | 'credit' | 'all';
+  dateFrom?: string;
+  dateTo?: string;
+  minAmountMinor?: number;
+  maxAmountMinor?: number;
+  page?: number;
+  pageSize?: number;
+}
+
+interface ApiTransactionHistoryPage {
+  count: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+  results: ApiTransaction[];
+}
+
+export interface TransactionHistoryPage {
+  count: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrevious: boolean;
+  results: DemoTransaction[];
+}
+
 const colorNames = ['lavender', 'peach', 'mint', 'blue', 'rose'];
 
 export function mapRecipient(recipient: ApiRecipient): DemoRecipient {
@@ -130,6 +163,30 @@ export const paymentApi = {
   ),
   deleteRecipient: (id: string) => paymentRequest<void>(paymentPath(`recipients/${encodeURIComponent(id)}/`), { method: 'DELETE' }),
   transactions: async (limit = 100) => (await paymentRequest<ApiTransaction[]>(paymentPath(`transactions/?limit=${limit}`))).map(mapTransaction),
+  history: async (filters: PaymentHistoryFilters = {}): Promise<TransactionHistoryPage> => {
+    const params = new URLSearchParams();
+    if (filters.search?.trim()) params.set('search', filters.search.trim());
+    if (filters.status && filters.status !== 'all') params.set('status', filters.status);
+    if (filters.category && filters.category !== 'all') params.set('category', filters.category);
+    if (filters.direction && filters.direction !== 'all') params.set('direction', filters.direction);
+    if (filters.dateFrom) params.set('date_from', filters.dateFrom);
+    if (filters.dateTo) params.set('date_to', filters.dateTo);
+    if (filters.minAmountMinor !== undefined) params.set('min_amount_minor', String(filters.minAmountMinor));
+    if (filters.maxAmountMinor !== undefined) params.set('max_amount_minor', String(filters.maxAmountMinor));
+    if (filters.page !== undefined) params.set('page', String(filters.page));
+    if (filters.pageSize !== undefined) params.set('page_size', String(filters.pageSize));
+    const query = params.toString();
+    const result = await paymentRequest<ApiTransactionHistoryPage>(paymentPath(`transactions/history/${query ? `?${query}` : ''}`));
+    return {
+      count: result.count,
+      page: result.page,
+      pageSize: result.page_size,
+      totalPages: result.total_pages,
+      hasNext: result.has_next,
+      hasPrevious: result.has_previous,
+      results: result.results.map(mapTransaction),
+    };
+  },
   initiate: async (payment: NewDemoPayment) => {
     if (!payment.idempotencyKey) throw new ApiError('A unique demo request key is required.');
     const body: Record<string, unknown> = {
@@ -143,6 +200,8 @@ export const paymentApi = {
       else if (payment.upiId) body.upi_id = payment.upiId;
     } else {
       body.service = payment.service;
+      if (payment.provider) body.provider = payment.provider;
+      if (payment.planCode) body.plan_code = payment.planCode;
       body.recipient_reference = payment.recipientReference ?? '';
     }
     return mapTransaction(await paymentRequest<ApiTransaction>(paymentPath('transactions/'), {

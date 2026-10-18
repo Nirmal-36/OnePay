@@ -107,18 +107,20 @@ export function DemoProvider({ children }: PropsWithChildren) {
 
   const upsertTransaction = useCallback((transaction: DemoTransaction) => {
     const previous = knownTransactions.current.get(transaction.id);
+    const changedOutcome = !previous || previous.status !== transaction.status;
     const balanceDelta = transactionBalanceDelta(transaction, previous);
     knownTransactions.current.set(transaction.id, transaction);
     if (balanceDelta) setBalancePaise((current) => current + balanceDelta);
     setTransactions((current) => [transaction, ...current.filter((item) => item.id !== transaction.id)]);
+    return changedOutcome;
   }, []);
 
   const addDemoFunds = useCallback(async (amountPaise: number, idempotencyKey: string) => {
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) throw new Error('Choose a valid demo-funds amount.');
     const transaction = await paymentApi.topup(amountPaise, idempotencyKey);
-    upsertTransaction(transaction);
+    const outcomeChanged = upsertTransaction(transaction);
     await refreshPaymentData().catch(() => undefined);
-    if (preferences.inAppAlerts) setNotifications((current) => [{
+    if (preferences.inAppAlerts && outcomeChanged) setNotifications((current) => [{
       id: makeId(), title: 'Demo funds added', body: 'The OnePay server credited simulated funds. No money was collected.',
       createdAt: new Date().toISOString(), read: false, kind: 'service', href: '/transactions',
     }, ...current]);
@@ -130,13 +132,21 @@ export function DemoProvider({ children }: PropsWithChildren) {
       throw new Error('Enter an amount greater than zero.');
     }
     const transaction = await paymentApi.initiate(payment);
-    upsertTransaction(transaction);
+    const outcomeChanged = upsertTransaction(transaction);
     await refreshPaymentData().catch(() => undefined);
-    if (preferences.inAppAlerts) setNotifications((current) => [{
-      id: makeId(), title: transaction.status === 'failed' ? 'Demo payment failed' : 'Demo activity recorded',
-      body: `${transaction.title} · simulated only. No real payment was made.`,
-      createdAt: new Date().toISOString(), read: false, kind: 'payment', href: `/transactions/${transaction.reference}`,
-    }, ...current]);
+    if (preferences.inAppAlerts && outcomeChanged) {
+      const activity = transaction.category === 'recharge' ? 'recharge' : transaction.category === 'bill' ? 'bill payment' : 'payment';
+      const outcome = transaction.status === 'failed' ? 'failed' : transaction.status === 'pending' ? 'pending' : 'completed';
+      const body = transaction.status === 'failed'
+        ? `${transaction.title} · local simulation declined it and refunded the demo debit. No provider was contacted.`
+        : transaction.status === 'pending'
+          ? `${transaction.title} · local demo result is pending. No provider was contacted.`
+          : `${transaction.title} · completed in the local simulator only. No real payment was made.`;
+      setNotifications((current) => [{
+        id: makeId(), title: `Demo ${activity} ${outcome}`, body,
+        createdAt: new Date().toISOString(), read: false, kind: 'payment', href: `/transactions/${encodeURIComponent(transaction.reference)}`,
+      }, ...current]);
+    }
     return transaction;
   }, [preferences.inAppAlerts, refreshPaymentData, upsertTransaction]);
 

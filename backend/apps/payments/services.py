@@ -41,13 +41,60 @@ DEMO_QR_SALT = "onepay.demo-payment-qr.v1"
 PROFILE_UPI_RE = re.compile(r"^user(?P<user_id>[1-9][0-9]*)@onepay$")
 
 SERVICE_RECIPIENT_NAMES = {
-    "mobile": "Demo Mobile",
-    "dth": "Demo DTH",
-    "electricity": "Demo Electricity",
-    "water": "Demo Water",
-    "gas": "Demo Gas",
-    "broadband": "Demo Broadband",
+    "mobile": "OnePay Mock Mobile Alpha",
+    "dth": "OnePay Mock DTH",
+    "electricity": "OnePay Mock Electricity",
+    "water": "OnePay Mock Water",
+    "gas": "OnePay Mock Gas",
+    "broadband": "OnePay Mock Broadband",
+    "other": "OnePay Mock Utility",
 }
+
+SERVICE_PROVIDERS = {
+    "mobile": ("OnePay Mock Mobile Alpha", "OnePay Mock Mobile Beta"),
+    "dth": ("OnePay Mock DTH",),
+    "electricity": ("OnePay Mock Electricity",),
+    "water": ("OnePay Mock Water",),
+    "gas": ("OnePay Mock Gas",),
+    "broadband": ("OnePay Mock Broadband",),
+    "other": ("OnePay Mock Utility",),
+}
+
+# Fictional, server-validated examples. These values do not describe live plans.
+MOCK_RECHARGE_PLANS = {
+    "mobile-alpha-example-a": {
+        "service": "mobile", "provider": "OnePay Mock Mobile Alpha",
+        "amount_minor": 19_900, "label": "Mock plan A",
+    },
+    "mobile-alpha-example-b": {
+        "service": "mobile", "provider": "OnePay Mock Mobile Alpha",
+        "amount_minor": 29_900, "label": "Mock plan B",
+    },
+    "mobile-beta-example-a": {
+        "service": "mobile", "provider": "OnePay Mock Mobile Beta",
+        "amount_minor": 19_900, "label": "Mock plan A",
+    },
+    "mobile-beta-example-b": {
+        "service": "mobile", "provider": "OnePay Mock Mobile Beta",
+        "amount_minor": 49_900, "label": "Mock plan B",
+    },
+    "dth-example-a": {
+        "service": "dth", "provider": "OnePay Mock DTH",
+        "amount_minor": 19_900, "label": "Mock plan A",
+    },
+    "dth-example-b": {
+        "service": "dth", "provider": "OnePay Mock DTH",
+        "amount_minor": 29_900, "label": "Mock plan B",
+    },
+    "dth-example-c": {
+        "service": "dth", "provider": "OnePay Mock DTH",
+        "amount_minor": 49_900, "label": "Mock plan C",
+    },
+}
+
+BILL_SERVICES = ("electricity", "water", "gas", "broadband", "other")
+RECHARGE_SERVICES = ("mobile", "dth")
+ALL_SERVICES = RECHARGE_SERVICES + BILL_SERVICES
 
 _wallet_mutexes = defaultdict(threading.Lock)
 
@@ -331,7 +378,7 @@ def _resolve_payment_recipient(user, payload):
 def _mask_identifier(value):
     digits = "".join(character for character in (value or "") if character.isdigit())
     if not digits:
-        return ""
+        return "Mock reference" if value else ""
     return f"Ending {digits[-4:]}"
 
 
@@ -389,6 +436,13 @@ def simulate_payment(transaction_obj):
         return PaymentTransaction.Status.FAILED
     if identifier in {"pending@onepay", "timeout@mock"}:
         raise PaymentNetworkError("The local simulator is temporarily unavailable.")
+    if transaction_obj.kind in {PaymentTransaction.Kind.BILL, PaymentTransaction.Kind.RECHARGE}:
+        # A masked demo account ending in these values exercises the local
+        # failure and pending states without storing the submitted identifier.
+        if identifier == "ending 0000":
+            return PaymentTransaction.Status.FAILED
+        if identifier == "ending 9999":
+            raise PaymentNetworkError("The local simulator is temporarily unavailable.")
     return PaymentTransaction.Status.SUCCESSFUL
 
 
@@ -494,6 +548,8 @@ def initiate_payment(user, payload, idempotency_key):
         fingerprint_payload = {
             "kind": kind,
             "service": service_name,
+            "provider": payload.get("provider") or SERVICE_RECIPIENT_NAMES.get(service_name, ""),
+            "plan_code": payload.get("plan_code", ""),
             "amount_minor": amount_minor,
             "recipient_reference": _mask_identifier(raw_identifier),
             "recipient_reference_tag": _private_identifier_fingerprint(raw_identifier),
@@ -515,8 +571,12 @@ def initiate_payment(user, payload, idempotency_key):
                 else:
                     recipient = None
                     service_name = payload["service"]
-                    recipient_name = SERVICE_RECIPIENT_NAMES[service_name]
+                    recipient_name = payload.get("provider") or SERVICE_RECIPIENT_NAMES[service_name]
                     recipient_identifier = _mask_identifier(payload.get("recipient_reference", ""))
+                note = payload.get("note", "")
+                plan = MOCK_RECHARGE_PLANS.get(payload.get("plan_code", ""))
+                if plan and not note:
+                    note = f"{plan['label']} · illustrative mock plan"
                 if wallet.balance_minor < amount_minor:
                     raise ValidationError({"amount_minor": ["Your OnePay demo balance is too low for this payment."]})
 
@@ -528,7 +588,7 @@ def initiate_payment(user, payload, idempotency_key):
                     recipient_identifier=recipient_identifier,
                     kind=kind,
                     service=service_name,
-                    note=payload.get("note", ""),
+                    note=note,
                     amount_minor=amount_minor,
                     currency=wallet.currency,
                     status=PaymentTransaction.Status.PENDING,
@@ -561,6 +621,7 @@ def initiate_payment(user, payload, idempotency_key):
                         "amount_minor": amount_minor,
                         "currency": wallet.currency,
                         "kind": kind,
+                        "service": service_name,
                     },
                 )
                 transaction_id = transaction_obj.pk

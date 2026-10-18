@@ -1,16 +1,19 @@
+import re
+
 from rest_framework import serializers
 
 from .models import PaymentTransaction, Recipient, TransactionStatusHistory, Wallet
 from .services import (
+    ALL_SERVICES,
+    BILL_SERVICES,
     MAX_PAYMENT_MINOR,
+    MOCK_RECHARGE_PLANS,
+    RECHARGE_SERVICES,
+    SERVICE_PROVIDERS,
     TOPUP_AMOUNTS_MINOR,
     parse_demo_payment_qr,
     validate_mock_upi_id,
 )
-
-BILL_SERVICES = ("electricity", "water", "gas", "broadband")
-RECHARGE_SERVICES = ("mobile", "dth")
-ALL_SERVICES = RECHARGE_SERVICES + BILL_SERVICES
 
 
 class WalletSerializer(serializers.ModelSerializer):
@@ -92,6 +95,8 @@ class PaymentInitiationSerializer(serializers.Serializer):
     upi_id = serializers.CharField(required=False, max_length=64, allow_blank=False, trim_whitespace=True)
     qr_content = serializers.CharField(required=False, max_length=512, allow_blank=False, trim_whitespace=False)
     service = serializers.ChoiceField(choices=ALL_SERVICES, required=False)
+    provider = serializers.CharField(required=False, max_length=80, allow_blank=False, trim_whitespace=True)
+    plan_code = serializers.CharField(required=False, max_length=64, allow_blank=False, trim_whitespace=True)
     recipient_reference = serializers.CharField(required=False, max_length=64, allow_blank=True, trim_whitespace=True)
     note = serializers.CharField(required=False, max_length=80, allow_blank=True, trim_whitespace=True)
 
@@ -114,7 +119,7 @@ class PaymentInitiationSerializer(serializers.Serializer):
                 })
             if attrs.get("qr_content") is not None:
                 parse_demo_payment_qr(attrs["qr_content"])
-            if attrs.get("service") or attrs.get("recipient_reference"):
+            if any(attrs.get(field) for field in ("service", "provider", "plan_code", "recipient_reference")):
                 raise serializers.ValidationError({"kind": ["Bill or recharge details are not valid for a transfer."]})
         else:
             if (
@@ -130,6 +135,39 @@ class PaymentInitiationSerializer(serializers.Serializer):
                 raise serializers.ValidationError({"service": ["Choose Mobile or DTH for a recharge."]})
             if kind == PaymentTransaction.Kind.BILL and service not in BILL_SERVICES:
                 raise serializers.ValidationError({"service": ["Choose an available utility bill service."]})
+
+            provider = attrs.get("provider") or SERVICE_PROVIDERS[service][0]
+            if provider not in SERVICE_PROVIDERS[service]:
+                raise serializers.ValidationError({"provider": ["Choose a supported OnePay mock provider for this service."]})
+            attrs["provider"] = provider
+
+            reference = attrs.get("recipient_reference", "").strip()
+            if not reference:
+                raise serializers.ValidationError({"recipient_reference": ["Enter a bill or subscriber reference."]})
+            if service == "mobile":
+                if not re.fullmatch(r"\+?[0-9\s().-]+", reference):
+                    raise serializers.ValidationError({"recipient_reference": ["Use only digits and common phone-number separators."]})
+                digits = re.sub(r"\D", "", reference)
+                if len(digits) == 12 and digits.startswith("91"):
+                    digits = digits[2:]
+                if not re.fullmatch(r"[6-9]\d{9}", digits):
+                    raise serializers.ValidationError({"recipient_reference": ["Enter a valid 10-digit demo mobile number, optionally prefixed with +91."]})
+                attrs["recipient_reference"] = digits
+            elif not re.fullmatch(r"[A-Za-z0-9-]{4,24}", reference):
+                raise serializers.ValidationError({"recipient_reference": ["Use a 4–24 character reference containing letters, numbers, or hyphens."]})
+
+            plan_code = attrs.get("plan_code", "")
+            if plan_code:
+                plan = MOCK_RECHARGE_PLANS.get(plan_code)
+                if (
+                    kind != PaymentTransaction.Kind.RECHARGE
+                    or plan is None
+                    or plan["service"] != service
+                    or plan["provider"] != provider
+                ):
+                    raise serializers.ValidationError({"plan_code": ["Choose a mock plan available for this service and provider."]})
+                if attrs["amount_minor"] != plan["amount_minor"]:
+                    raise serializers.ValidationError({"amount_minor": ["The amount does not match the selected mock plan."]})
         if attrs.get("note"):
             attrs["note"] = attrs["note"].strip()
         if attrs.get("recipient_reference"):

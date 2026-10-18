@@ -47,7 +47,7 @@ export default function TransactionReceiptPage() {
             <div className="receipt-page-amount">{transaction.status === 'failed' ? 'Not debited' : `${isCredit ? '+' : '−'}${formatRupees(transaction.amount_minor)}`}<small>{transaction.currency} · simulated amount</small></div>
             <dl className="receipt-page-details">
               <div><dt>Sender</dt><dd>{transaction.sender_name}</dd></div>
-              <div><dt>{transaction.kind === 'topup' ? 'Wallet' : 'Recipient'}</dt><dd>{transaction.recipient_name}</dd></div>
+              <div><dt>{transaction.kind === 'topup' ? 'Wallet' : transaction.kind === 'bill' || transaction.kind === 'recharge' ? 'Mock provider / biller' : 'Recipient'}</dt><dd>{transaction.recipient_name}</dd></div>
               {transaction.recipient_identifier && <div><dt>Mock identifier</dt><dd>{transaction.recipient_identifier}</dd></div>}
               <div><dt>Type</dt><dd>{transaction.kind === 'transfer' ? 'Person-to-person demo' : transaction.kind === 'topup' ? 'Demo wallet top-up' : transaction.kind === 'recharge' ? `Demo ${transaction.service} recharge` : `Demo ${transaction.service} bill`}</dd></div>
               {transaction.note && <div><dt>Note</dt><dd>{transaction.note}</dd></div>}

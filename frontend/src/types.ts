@@ -49,6 +49,8 @@ export interface NewDemoPayment {
   upiId?: string;
   note?: string;
   service?: string;
+  provider?: string;
+  planCode?: string;
   recipientReference?: string;
   qrContent?: string;
 }

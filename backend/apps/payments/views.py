@@ -1,7 +1,10 @@
+from datetime import date
+from django.core.paginator import Paginator
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import (
@@ -48,13 +51,15 @@ class DemoQrGenerateView(APIView):
 
     def post(self, request):
         upi_id = profile_upi_id(request.user)
-        result = DemoQrGeneratedSerializer({
-            "qr_content": create_demo_payment_qr(request.user),
-            "display_name": request.user.full_name,
-            "upi_id": upi_id,
-            "currency": "INR",
-            "mode": "demo",
-        })
+        result = DemoQrGeneratedSerializer(
+            {
+                "qr_content": create_demo_payment_qr(request.user),
+                "display_name": request.user.full_name,
+                "upi_id": upi_id,
+                "currency": "INR",
+                "mode": "demo",
+            }
+        )
         return Response(result.data, status=status.HTTP_200_OK)
 
 
@@ -64,8 +69,12 @@ class DemoQrResolveView(APIView):
     def post(self, request):
         serializer = DemoQrResolveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        resolution = resolve_demo_payment_qr(request.user, serializer.validated_data["qr_content"])
-        return Response(DemoQrResolutionSerializer(resolution).data, status=status.HTTP_200_OK)
+        resolution = resolve_demo_payment_qr(
+            request.user, serializer.validated_data["qr_content"]
+        )
+        return Response(
+            DemoQrResolutionSerializer(resolution).data, status=status.HTTP_200_OK
+        )
 
 
 class WalletTopupView(APIView):
@@ -197,6 +206,164 @@ class TransactionCollectionView(APIView):
         return Response(
             PaymentTransactionSerializer(transaction_obj).data,
             status=status.HTTP_200_OK,
+        )
+
+
+class TransactionHistoryView(APIView):
+    """Return a filtered, paginated view of the caller's own demo ledger."""
+
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        params = request.query_params
+        queryset = PaymentTransaction.objects.filter(
+            sender=request.user
+        ).prefetch_related("status_history")
+
+        search = params.get("search", "").strip()
+        if len(search) > 100:
+            raise ValidationError({"search": ["Use at most 100 characters."]})
+
+        if search:
+            queryset = queryset.filter(
+                Q(reference__icontains=search)
+                | Q(recipient_name__icontains=search)
+                | Q(recipient_identifier__icontains=search)
+                | Q(note__icontains=search)
+                | Q(service__icontains=search)
+            )
+
+        status_filter = params.get("status", "").strip()
+        if status_filter:
+            if status_filter not in PaymentTransaction.Status.values:
+                raise ValidationError(
+                    {"status": ["Choose pending, successful, failed, or reversed."]}
+                )
+            queryset = queryset.filter(status=status_filter)
+
+        category = params.get("category", "").strip()
+        if category:
+            if category not in PaymentTransaction.Kind.values:
+                raise ValidationError(
+                    {"category": ["Choose transfer, bill, recharge, or topup."]}
+                )
+            queryset = queryset.filter(kind=category)
+
+        direction = params.get("direction", "").strip()
+        if direction == "credit":
+            queryset = queryset.filter(
+                Q(kind=PaymentTransaction.Kind.TOPUP)
+                | Q(status=PaymentTransaction.Status.REVERSED)
+            )
+        elif direction == "debit":
+            queryset = queryset.exclude(kind=PaymentTransaction.Kind.TOPUP).exclude(
+                status=PaymentTransaction.Status.REVERSED
+            )
+        elif direction:
+            raise ValidationError({"direction": ["Choose debit or credit."]})
+
+        parsed_dates = {}
+        for parameter, lookup in (
+            ("date_from", "created_at__date__gte"),
+            ("date_to", "created_at__date__lte"),
+        ):
+            raw_value = params.get(parameter, "").strip()
+            if not raw_value:
+                continue
+
+            try:
+                parsed_dates[parameter] = date.fromisoformat(raw_value)
+            except ValueError as exc:
+                raise ValidationError(
+                    {parameter: ["Use a date in YYYY-MM-DD format."]}
+                ) from exc
+
+            queryset = queryset.filter(**{lookup: parsed_dates[parameter]})
+
+        if (
+            parsed_dates.get("date_from")
+            and parsed_dates.get("date_to")
+            and parsed_dates["date_from"] > parsed_dates["date_to"]
+        ):
+            raise ValidationError(
+                {"date_to": ["The end date must be on or after the start date."]}
+            )
+
+        amount_filters = {}
+        for parameter, lookup in (
+            ("min_amount_minor", "amount_minor__gte"),
+            ("max_amount_minor", "amount_minor__lte"),
+        ):
+            raw_value = params.get(parameter, "").strip()
+            if not raw_value:
+                continue
+
+            try:
+                amount = int(raw_value)
+            except ValueError as exc:
+                raise ValidationError(
+                    {parameter: ["Enter a whole number of INR paise."]}
+                ) from exc
+
+            if amount < 0:
+                raise ValidationError({parameter: ["The amount cannot be negative."]})
+
+            amount_filters[parameter] = amount
+            queryset = queryset.filter(**{lookup: amount})
+
+        if (
+            amount_filters.get("min_amount_minor") is not None
+            and amount_filters.get("max_amount_minor") is not None
+            and amount_filters["min_amount_minor"] > amount_filters["max_amount_minor"]
+        ):
+            raise ValidationError(
+                {
+                    "max_amount_minor": [
+                        "The maximum amount must be at least the minimum amount."
+                    ]
+                }
+            )
+
+        def positive_integer(name, default, maximum):
+            raw_value = params.get(name, "").strip()
+            if not raw_value:
+                return default
+
+            try:
+                value = int(raw_value)
+            except ValueError as exc:
+                raise ValidationError({name: ["Enter a whole number."]}) from exc
+
+            if not 1 <= value <= maximum:
+                raise ValidationError(
+                    {name: [f"Enter a number between 1 and {maximum}."]}
+                )
+
+            return value
+
+        page_number = positive_integer("page", 1, 1_000_000)
+        page_size = positive_integer("page_size", 10, 50)
+
+        paginator = Paginator(queryset, page_size)
+        total_pages = paginator.num_pages if paginator.count else 0
+
+        if page_number > max(total_pages, 1):
+            raise NotFound("The requested transaction-history page does not exist.")
+
+        page = paginator.page(page_number)
+
+        return Response(
+            {
+                "count": paginator.count,
+                "page": page.number,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "has_next": page.has_next(),
+                "has_previous": page.has_previous(),
+                "results": PaymentTransactionSerializer(
+                    page.object_list, many=True
+                ).data,
+            }
         )
 
 

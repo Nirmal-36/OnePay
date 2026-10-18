@@ -141,7 +141,7 @@ export default function AppShell() {
 
         <main id="main-content" className="page-container">
           <div className="persistent-demo-notice" role="note"><ShieldCheck size={17} /><span><strong>OnePay demo only.</strong> All balances and payments are simulated; no real UPI transfer or funds movement occurs.</span></div>
-          {paymentDataError && <div className="payment-data-error" role="alert"><span>{paymentDataError}</span><button type="button" onClick={() => { void refreshPaymentData().catch(() => undefined); }}>Retry</button></div>}
+          {paymentDataError && location.pathname !== '/bills' && <div className="payment-data-error" role="alert"><span>{paymentDataError}</span><button type="button" onClick={() => { void refreshPaymentData().catch(() => undefined); }}>Retry</button></div>}
           <Outlet />
         </main>
 

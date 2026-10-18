@@ -1,9 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 
@@ -429,6 +431,17 @@ def test_bill_payment_masks_customer_identifier_and_returns_receipt():
         **headers("mobile-recharge-key-0001"),
     )
     receipt = client.get(f"{BASE}transactions/{response.data['reference']}/receipt/")
+    replay = client.post(
+        f"{BASE}transactions/",
+        {
+            "kind": "recharge",
+            "service": "mobile",
+            "amount_minor": 2_990,
+            "recipient_reference": "+91 98765 43210",
+        },
+        format="json",
+        **headers("mobile-recharge-key-0001"),
+    )
     conflicting_replay = client.post(
         f"{BASE}transactions/",
         {
@@ -442,12 +455,195 @@ def test_bill_payment_masks_customer_identifier_and_returns_receipt():
     )
 
     assert response.status_code == 200
-    assert response.data["recipient_name"] == "Demo Mobile"
+    assert response.data["recipient_name"] == "OnePay Mock Mobile Alpha"
     assert response.data["recipient_identifier"] == "Ending 3210"
     assert "+91 98765 43210" not in str(response.data)
     assert receipt.status_code == 200
+    assert replay.status_code == 200
+    assert replay.data["reference"] == response.data["reference"]
+    assert PaymentTransaction.objects.filter(sender=user, kind="recharge").count() == 1
+    assert WalletLedgerEntry.objects.filter(transaction__reference=response.data["reference"], entry_type="debit").count() == 1
     assert conflicting_replay.status_code == 409
     assert "No real money was transferred" in receipt.data["notice"]
+
+
+@pytest.mark.django_db
+def test_mock_recharge_operator_and_plan_are_validated_and_idempotent():
+    user = make_user()
+    client = make_client(user)
+    payload = {
+        "kind": "recharge",
+        "service": "mobile",
+        "provider": "OnePay Mock Mobile Beta",
+        "plan_code": "mobile-beta-example-b",
+        "amount_minor": 49_900,
+        "recipient_reference": "9876543210",
+    }
+    first = client.post(f"{BASE}transactions/", payload, format="json", **headers("mock-plan-repeat-key-01"))
+    replay = client.post(f"{BASE}transactions/", payload, format="json", **headers("mock-plan-repeat-key-01"))
+    invalid_amount = client.post(
+        f"{BASE}transactions/",
+        {**payload, "amount_minor": 19_900},
+        format="json",
+        **headers("mock-plan-invalid-key-01"),
+    )
+    invalid_provider = client.post(
+        f"{BASE}transactions/",
+        {**payload, "provider": "Real Carrier", "plan_code": ""},
+        format="json",
+        **headers("mock-provider-invalid-01"),
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.data["reference"] == replay.data["reference"]
+    assert first.data["recipient_name"] == "OnePay Mock Mobile Beta"
+    assert first.data["note"] == "Mock plan B · illustrative mock plan"
+    assert first.data["recipient_identifier"] == "Ending 3210"
+    assert "9876543210" not in str(first.data)
+    assert invalid_amount.status_code == invalid_provider.status_code == 400
+    assert PaymentTransaction.objects.filter(sender=user, kind="recharge").count() == 1
+    assert WalletLedgerEntry.objects.filter(transaction__reference=first.data["reference"], entry_type="debit").count() == 1
+
+
+@pytest.mark.django_db
+def test_bill_reference_validation_and_failed_or_pending_outcomes_are_safe_to_retry():
+    user = make_user()
+    client = make_client(user)
+    before = client.get(f"{BASE}wallet/").data["balance_minor"]
+    invalid_reference = client.post(
+        f"{BASE}transactions/",
+        {"kind": "recharge", "service": "mobile", "amount_minor": 1_000, "recipient_reference": "12345"},
+        format="json",
+        **headers("bad-mobile-reference-001"),
+    )
+    failure_payload = {
+        "kind": "bill", "service": "electricity", "provider": "OnePay Mock Electricity",
+        "amount_minor": 5_000, "recipient_reference": "EB-0000",
+    }
+    failed = client.post(f"{BASE}transactions/", failure_payload, format="json", **headers("bill-fail-retry-key-01"))
+    failed_replay = client.post(f"{BASE}transactions/", failure_payload, format="json", **headers("bill-fail-retry-key-01"))
+    pending_payload = {
+        "kind": "bill", "service": "water", "provider": "OnePay Mock Water",
+        "amount_minor": 2_000, "recipient_reference": "WTR-9999",
+    }
+    pending = client.post(f"{BASE}transactions/", pending_payload, format="json", **headers("bill-pending-key-0001"))
+    pending_replay = client.post(f"{BASE}transactions/", pending_payload, format="json", **headers("bill-pending-key-0001"))
+
+    assert invalid_reference.status_code == 400
+    assert failed.status_code == failed_replay.status_code == 200
+    assert failed.data["status"] == "failed"
+    assert failed_replay.data["reference"] == failed.data["reference"]
+    assert failed.data["recipient_identifier"] == "Ending 0000"
+    assert "EB-0000" not in str(failed.data)
+    assert pending.status_code == pending_replay.status_code == 200
+    assert pending.data["status"] == pending_replay.data["status"] == "pending"
+    assert pending.data["reference"] == pending_replay.data["reference"]
+    assert PaymentTransaction.objects.filter(sender=user).count() == 2
+    assert WalletLedgerEntry.objects.filter(transaction__reference=failed.data["reference"], entry_type="debit").count() == 1
+    assert WalletLedgerEntry.objects.filter(transaction__reference=failed.data["reference"], entry_type="failed_refund").count() == 1
+    assert WalletLedgerEntry.objects.filter(transaction__reference=pending.data["reference"], entry_type="debit").count() == 1
+    assert Wallet.objects.get(user=user).balance_minor == before - 2_000
+
+
+@pytest.mark.django_db
+def test_other_bill_service_is_recorded_with_a_masked_reference_and_receipt():
+    user = make_user()
+    client = make_client(user)
+    response = client.post(
+        f"{BASE}transactions/",
+        {
+            "kind": "bill", "service": "other", "provider": "OnePay Mock Utility",
+            "amount_minor": 1_250, "recipient_reference": "MISC-483920",
+        },
+        format="json",
+        **headers("other-bill-success-key-01"),
+    )
+    receipt = client.get(f"{BASE}transactions/{response.data['reference']}/receipt/")
+
+    assert response.status_code == receipt.status_code == 200
+    assert response.data["kind"] == "bill"
+    assert response.data["service"] == "other"
+    assert response.data["recipient_name"] == "OnePay Mock Utility"
+    assert response.data["recipient_identifier"] == "Ending 3920"
+    assert receipt.data["transaction"]["reference"] == response.data["reference"]
+    assert "MISC-483920" not in str(receipt.data)
+    assert "simulated transaction receipt" in receipt.data["notice"]
+    assert PaymentTransaction.objects.filter(sender=user, kind="bill", service="other").count() == 1
+
+
+@pytest.mark.django_db
+def test_transaction_history_filters_and_paginates_owned_entries():
+    user = make_user()
+    client = make_client(user)
+    transfer = client.post(
+        f"{BASE}transactions/", payment_payload(amount_minor=1_000), format="json", **headers("history-transfer-key-01")
+    )
+    recharge = client.post(
+        f"{BASE}transactions/",
+        {
+            "kind": "recharge", "service": "mobile", "provider": "OnePay Mock Mobile Alpha",
+            "plan_code": "mobile-alpha-example-a", "amount_minor": 19_900, "recipient_reference": "9876543210",
+        },
+        format="json", **headers("history-recharge-key-01"),
+    )
+    bill = client.post(
+        f"{BASE}transactions/",
+        {
+            "kind": "bill", "service": "water", "provider": "OnePay Mock Water",
+            "amount_minor": 5_500, "recipient_reference": "WTR-483920",
+        },
+        format="json", **headers("history-bill-key-0001"),
+    )
+    topup = client.post(
+        f"{BASE}wallet/topups/", {"amount_minor": 10_000}, format="json", **headers("history-topup-key-001")
+    )
+    old_transaction = PaymentTransaction.objects.get(reference=transfer.data["reference"])
+    old_transaction.created_at = timezone.now() - timedelta(days=5)
+    old_transaction.save(update_fields=("created_at",))
+
+    first_page = client.get(f"{BASE}transactions/history/?page=1&page_size=1")
+    second_page = client.get(f"{BASE}transactions/history/?page=2&page_size=1")
+    filtered = client.get(
+        f"{BASE}transactions/history/?status=successful&category=recharge&direction=debit"
+        "&min_amount_minor=15000&max_amount_minor=20000"
+        f"&date_from={timezone.localdate().isoformat()}&date_to={timezone.localdate().isoformat()}&search=Mock%20plan%20A"
+    )
+    bill_by_provider = client.get(f"{BASE}transactions/history/?category=bill&search=Water&min_amount_minor=5000")
+    credits = client.get(f"{BASE}transactions/history/?direction=credit")
+    invalid_amount_range = client.get(f"{BASE}transactions/history/?min_amount_minor=3000&max_amount_minor=2000")
+    invalid_status = client.get(f"{BASE}transactions/history/?status=unknown")
+
+    assert transfer.status_code == recharge.status_code == bill.status_code == topup.status_code == 200
+    assert first_page.status_code == second_page.status_code == 200
+    assert first_page.data["count"] == 4
+    assert first_page.data["page"] == 1 and first_page.data["page_size"] == 1
+    assert first_page.data["total_pages"] == 4 and first_page.data["has_next"] is True
+    assert second_page.data["results"][0]["reference"] != first_page.data["results"][0]["reference"]
+    assert filtered.data["count"] == 1
+    assert filtered.data["results"][0]["reference"] == recharge.data["reference"]
+    assert bill_by_provider.data["count"] == 1
+    assert bill_by_provider.data["results"][0]["reference"] == bill.data["reference"]
+    assert credits.data["count"] == 1
+    assert credits.data["results"][0]["reference"] == topup.data["reference"]
+    assert invalid_amount_range.status_code == invalid_status.status_code == 400
+
+
+@pytest.mark.django_db
+def test_transaction_history_is_authenticated_and_scoped_to_the_request_user():
+    owner = make_user()
+    owner_client = make_client(owner)
+    payment = owner_client.post(
+        f"{BASE}transactions/", payment_payload(), format="json", **headers("private-history-key-01")
+    )
+    other_client = make_client(make_user(email="history-intruder@example.test", full_name="History Intruder"))
+    anonymous = APIClient().get(f"{BASE}transactions/history/")
+    other_history = other_client.get(f"{BASE}transactions/history/")
+
+    assert payment.status_code == 200
+    assert anonymous.status_code == 401
+    assert other_history.status_code == 200
+    assert other_history.data["count"] == 0
+    assert other_history.data["results"] == []
 
 
 @pytest.mark.django_db

@@ -16,6 +16,8 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.notifications.services import notify_login, notify_password_changed, notify_profile_updated
+
 from .authentication import CsrfSessionAuthentication
 from .serializers import (
     LoginSerializer,
@@ -77,6 +79,7 @@ class LoginView(PublicAuthView):
         if user is None:
             raise AuthenticationFailed("Unable to log in with those credentials.")
         login(request, user)
+        notify_login(user)
         return Response({"user": UserSerializer(user).data, "csrfToken": get_token(request)})
 
 
@@ -105,7 +108,13 @@ class ProfileView(APIView):
     def patch(self, request):
         serializer = ProfileUpdateSerializer(request.user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        changed = any(
+            getattr(request.user, field) != value
+            for field, value in serializer.validated_data.items()
+        )
         serializer.save()
+        if changed:
+            notify_profile_updated(request.user)
         return Response({"user": UserSerializer(request.user).data})
 
 
@@ -152,4 +161,5 @@ class PasswordResetConfirmView(PublicAuthView):
         user = serializer.validated_data["user"]
         user.set_password(serializer.validated_data["new_password"])
         user.save(update_fields=["password"])
+        notify_password_changed(user)
         return Response({"message": "Password updated. You can now sign in with your new password."})

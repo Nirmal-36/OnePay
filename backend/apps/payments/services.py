@@ -417,6 +417,10 @@ def _record_status(transaction_obj, to_status, *, actor=None, reason=""):
         actor=actor,
         reason=reason[:120],
     )
+    if from_status != to_status:
+        from apps.notifications.services import notify_transaction_status
+
+        notify_transaction_status(transaction_obj, to_status)
 
 
 def _audit(*, actor, action, wallet=None, transaction_obj=None, metadata=None):
@@ -472,6 +476,9 @@ def _settle_pending_transaction(transaction_id, actor):
                     transaction_obj=transaction_obj,
                     metadata={"status": PaymentTransaction.Status.PENDING},
                 )
+                from apps.notifications.services import notify_transaction_status
+
+                notify_transaction_status(transaction_obj, PaymentTransaction.Status.PENDING)
                 return transaction_obj
 
             if outcome == PaymentTransaction.Status.FAILED:

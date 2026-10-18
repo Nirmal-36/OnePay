@@ -14,6 +14,8 @@ from rest_framework.throttling import (
 )
 from rest_framework.views import APIView
 
+from apps.notifications.services import notify_recipient_change
+
 from .models import AuditEvent, PaymentTransaction, Recipient
 from .serializers import (
     DemoQrGeneratedSerializer,
@@ -117,8 +119,18 @@ class RecipientViewSet(viewsets.ModelViewSet):
             action="recipient.created",
             metadata={"recipient_id": recipient.pk},
         )
+        notify_recipient_change(
+            self.request.user,
+            "created",
+            f"recipient:created:{recipient.pk}",
+        )
 
     def perform_update(self, serializer):
+        instance = serializer.instance
+        changed = any(
+            getattr(instance, field) != value
+            for field, value in serializer.validated_data.items()
+        )
         wallet = get_or_create_wallet(self.request.user)
         recipient = serializer.save()
         AuditEvent.objects.create(
@@ -127,6 +139,12 @@ class RecipientViewSet(viewsets.ModelViewSet):
             action="recipient.updated",
             metadata={"recipient_id": recipient.pk},
         )
+        if changed:
+            notify_recipient_change(
+                self.request.user,
+                "updated",
+                f"recipient:updated:{recipient.pk}:{recipient.updated_at.isoformat()}",
+            )
 
     def perform_destroy(self, instance):
         # Soft deletion preserves default-contact suppression and transaction history.
@@ -137,6 +155,11 @@ class RecipientViewSet(viewsets.ModelViewSet):
             wallet=get_or_create_wallet(self.request.user),
             action="recipient.removed",
             metadata={"recipient_id": instance.pk},
+        )
+        notify_recipient_change(
+            self.request.user,
+            "removed",
+            f"recipient:removed:{instance.pk}",
         )
 
     def list(self, request, *args, **kwargs):

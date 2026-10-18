@@ -31,14 +31,27 @@ export interface DemoProfile {
   upiId: string;
 }
 
+export type NotificationCategory =
+  | 'payment'
+  | 'wallet'
+  | 'bill'
+  | 'recharge'
+  | 'recipient'
+  | 'account'
+  | 'security'
+  | 'system';
+
 export interface DemoNotification {
   id: string;
   title: string;
   body: string;
   createdAt: string;
   read: boolean;
-  kind: 'payment' | 'tip' | 'security' | 'service';
+  dismissed: boolean;
+  category: NotificationCategory;
+  eventType: string;
   href: string;
+  relatedReference?: string;
 }
 
 export interface NewDemoPayment {

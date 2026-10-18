@@ -1,30 +1,8 @@
-import type { DemoNotification } from '../types';
-
 export const demoProfile = {
   name: 'Ananya Sharma',
   email: 'ananya.demo@example.com',
   upiId: 'ananya@onepay',
 };
-
-const demoDate = (hoursAgo: number): string => new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString();
-
-export const initialNotifications: DemoNotification[] = [
-  {
-    id: 'note-1', title: 'Your demo payment is ready',
-    body: 'Explore a safe, simulated payment flow. No real money moves in OnePay.',
-    createdAt: demoDate(1), read: false, kind: 'payment', href: '/send',
-  },
-  {
-    id: 'note-2', title: 'A little tip for you',
-    body: 'You can review every simulated payment from Transaction history.',
-    createdAt: demoDate(16), read: false, kind: 'tip', href: '/transactions',
-  },
-  {
-    id: 'note-3', title: 'Keep your account details private',
-    body: 'OnePay never asks for a banking PIN, password, OTP, or card security code.',
-    createdAt: demoDate(30), read: true, kind: 'security', href: '/profile',
-  },
-];
 
 export const billServices = [
   { id: 'mobile', label: 'Mobile', shortLabel: 'Mobile recharge', icon: 'mobile', detail: 'Mock mobile operators' },

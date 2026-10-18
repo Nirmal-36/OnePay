@@ -72,11 +72,77 @@ function installMockApi(options: { historyFailures?: number; historyFailureStatu
   let historyFailuresRemaining = options.historyFailures ?? 0;
   const idempotentTransactions = new Map<string, ApiTransaction>();
   const recipientStore = sampleRecipients.map((recipient) => ({ ...recipient }));
+  type MockNotification = {
+    id: string; category: string; event_type: string; title: string; message: string;
+    related_transaction_reference: string | null; navigation_target: string;
+    read: boolean; dismissed: boolean; created_at: string;
+  };
+  const notificationStore: MockNotification[] = [];
+  const addOutcomeNotification = (transaction: ApiTransaction) => {
+    const category = transaction.kind === 'bill' ? 'bill' : transaction.kind === 'recharge' ? 'recharge' : transaction.kind === 'topup' ? 'wallet' : 'payment';
+    const noun = transaction.kind === 'bill' ? 'bill payment' : transaction.kind === 'recharge' ? 'recharge' : transaction.kind === 'topup' ? 'funds addition' : 'payment';
+    const status = transaction.status;
+    if (status === 'pending') return;
+    const successful = status === 'successful';
+    const title = transaction.kind === 'topup'
+      ? 'Demo funds added'
+      : `Demo ${noun} ${successful ? 'completed' : status === 'reversed' ? 'reversed' : 'failed'}`;
+    const message = successful
+      ? `Your simulated ${noun} completed. No real money moved.`
+      : status === 'reversed'
+        ? 'The simulated transaction was reversed and the demo balance was credited back.'
+        : 'The local simulation declined it and refunded the demo debit. No real money moved.';
+    notificationStore.unshift({
+      id: `mock-notification-${notificationStore.length + 1}`,
+      category,
+      event_type: `${category}.${status === 'reversed' ? 'reversed' : status}`,
+      title,
+      message,
+      related_transaction_reference: transaction.reference,
+      navigation_target: `/transactions/${transaction.reference}`,
+      read: false,
+      dismissed: false,
+      created_at: now,
+    });
+  };
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'https://onepay.test');
     const method = init?.method ?? 'GET';
     if (url.pathname === '/api/v1/auth/me/') return jsonResponse(200, { user: testUser });
     if (url.pathname === '/api/v1/auth/csrf/') return jsonResponse(200, { csrfToken: 'test-csrf-token' });
+    if (url.pathname === '/api/v1/notifications/' && method === 'GET') {
+      let matched = notificationStore.filter((item) => !item.dismissed || url.searchParams.get('include_dismissed') === 'true');
+      const category = url.searchParams.get('category');
+      const read = url.searchParams.get('read');
+      if (category) matched = matched.filter((item) => item.category === category);
+      if (read !== null) matched = matched.filter((item) => item.read === (read === 'true'));
+      const page = Number(url.searchParams.get('page') ?? 1);
+      const pageSize = Number(url.searchParams.get('page_size') ?? 20);
+      const totalPages = matched.length ? Math.ceil(matched.length / pageSize) : 0;
+      return jsonResponse(200, { count: matched.length, page, page_size: pageSize, total_pages: totalPages, has_next: page < totalPages, has_previous: page > 1, results: matched.slice((page - 1) * pageSize, page * pageSize) });
+    }
+    if (url.pathname === '/api/v1/notifications/unread-count/' && method === 'GET') return jsonResponse(200, { unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
+    if (url.pathname === '/api/v1/notifications/read-all/' && method === 'POST') {
+      let updated = 0;
+      notificationStore.forEach((item) => { if (!item.read && !item.dismissed) { item.read = true; updated += 1; } });
+      return jsonResponse(200, { updated, unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
+    }
+    if (url.pathname === '/api/v1/notifications/dismiss-all/' && method === 'POST') {
+      let updated = 0;
+      notificationStore.forEach((item) => { if (!item.dismissed) { item.dismissed = true; updated += 1; } });
+      return jsonResponse(200, { updated, unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
+    }
+    const notificationAction = url.pathname.match(/^\/api\/v1\/notifications\/([^/]+)\/(read|dismiss)\/$/);
+    if (notificationAction && method === 'POST') {
+      const notification = notificationStore.find((item) => item.id === decodeURIComponent(notificationAction[1] ?? ''));
+      if (!notification) return jsonResponse(404, { detail: 'Notification not found.' });
+      if (notificationAction[2] === 'read') {
+        notification.read = true;
+        return jsonResponse(200, { notification, unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
+      }
+      notification.dismissed = true;
+      return jsonResponse(200, { dismissed: true, unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
+    }
     if (url.pathname === '/api/v1/payments/wallet/') return jsonResponse(200, { balance_minor: 2_458_000, currency: 'INR', updated_at: now });
     if (url.pathname === '/api/v1/payments/recipients/' && method === 'GET') return jsonResponse(200, recipientStore);
     if (url.pathname === '/api/v1/payments/recipients/' && method === 'POST') {
@@ -182,6 +248,7 @@ function installMockApi(options: { historyFailures?: number; historyFailureStatu
         ] as ApiTransaction['status_history'],
       });
       transactions.unshift(created);
+      addOutcomeNotification(created);
       if (requestKey) idempotentTransactions.set(requestKey, created);
       return jsonResponse(200, created);
     }
@@ -321,13 +388,49 @@ describe('application routes', () => {
 
   it('deduplicates in-app outcome alerts when the server replays an idempotent request', async () => {
     const fetchMock = installMockApi();
-    render(<AuthProvider><DemoProvider><ToastProvider><RepeatedPaymentHarness /></ToastProvider></DemoProvider></AuthProvider>);
+
+    render(
+      <AuthProvider>
+        <DemoProvider>
+          <ToastProvider>
+            <RepeatedPaymentHarness />
+          </ToastProvider>
+        </DemoProvider>
+      </AuthProvider>,
+    );
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([input]) =>
+            String(input).endsWith('/api/v1/notifications/unread-count/'),
+        ),
+      ).toBe(true);
+    });
+
     fireEvent.click(screen.getByRole('button', { name: 'Repeat same simulated bill' }));
-    expect(await screen.findByText('Outcome alerts: 1')).toBeInTheDocument();
-    await waitFor(() => expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/payments/transactions/') && init?.method === 'POST')).toHaveLength(2));
-    const posts = fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/payments/transactions/') && init?.method === 'POST');
+
+    await waitFor(() => {
+      const posts = fetchMock.mock.calls.filter(
+        ([input, init]) =>
+          String(input).endsWith('/payments/transactions/') &&
+          init?.method === 'POST',
+      );
+      expect(posts).toHaveLength(2);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Outcome alerts: 1')).toBeInTheDocument();
+    });
+
+    const posts = fetchMock.mock.calls.filter(
+      ([input, init]) =>
+        String(input).endsWith('/payments/transactions/') &&
+        init?.method === 'POST',
+    );
+
     const firstHeaders = posts[0]?.[1]?.headers as Record<string, string>;
     const secondHeaders = posts[1]?.[1]?.headers as Record<string, string>;
+
     expect(firstHeaders['Idempotency-Key']).toBe('repeat-bill-key-0001');
     expect(secondHeaders['Idempotency-Key']).toBe(firstHeaders['Idempotency-Key']);
   });

@@ -62,11 +62,11 @@ function SidebarLinks() {
 export default function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { profile, notifications, paymentDataError, refreshPaymentData } = useDemo();
+  const { profile, notificationUnreadCount, paymentDataError, refreshPaymentData } = useDemo();
   const { signOut } = useAuth();
   const { showToast } = useToast();
   const [signingOut, setSigningOut] = useState(false);
-  const unreadCount = notifications.filter((item) => !item.read).length;
+  const unreadCount = notificationUnreadCount;
 
   const handleSignOut = async () => {
     setSigningOut(true);
@@ -87,7 +87,7 @@ export default function AppShell() {
   const notificationButton = (
     <Link to="/notifications" className="icon-button notification-trigger" aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ''}`}>
       <Bell size={19} strokeWidth={1.8} />
-      {unreadCount > 0 && <span className="notification-dot" aria-hidden="true" />}
+      {unreadCount > 0 && <span className="notification-count-badge" aria-hidden="true">{unreadCount > 99 ? '99+' : unreadCount}</span>}
     </Link>
   );
 

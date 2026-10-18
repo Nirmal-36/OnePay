@@ -27,3 +27,6 @@ backend/.coverage
 .vscode/
 
 .DS_Store
+
+# Local development database
+/backend/onepay-local.sqlite3

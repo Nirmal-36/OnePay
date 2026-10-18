@@ -34,6 +34,8 @@ def test_topup_is_a_validated_idempotent_server_credit():
     assert first.data["status"] == "successful"
     assert invalid.status_code == 400
     assert forbidden_reversal.status_code == 403
+    assert PaymentTransaction.objects.get(reference=first.data["reference"]).status == PaymentTransaction.Status.SUCCESSFUL
     assert Wallet.objects.get(user=user).balance_minor == 2_468_000
     assert PaymentTransaction.objects.filter(sender=user, kind="topup").count() == 1
     assert WalletLedgerEntry.objects.filter(transaction__reference=first.data["reference"], entry_type="topup_credit").count() == 1
+    assert not WalletLedgerEntry.objects.filter(transaction__reference=first.data["reference"], entry_type="reversal_credit").exists()

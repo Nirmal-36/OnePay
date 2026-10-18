@@ -3,6 +3,8 @@ import uuid
 from django.contrib import admin
 from django.core.exceptions import PermissionDenied
 
+from apps.payments.models import AuditEvent
+
 from .forms import SystemAnnouncementForm
 from .models import Notification, NotificationState
 
@@ -36,11 +38,18 @@ class NotificationAdmin(admin.ModelAdmin):
     def get_readonly_fields(self, request, obj=None):
         return self.get_fields(request, obj) if obj is not None else ()
 
+    def _is_authorized_announcer(self, user):
+        return bool(
+            user.is_active
+            and user.is_staff
+            and (user.is_superuser or user.has_perm("notifications.add_notification"))
+        )
+
     def has_add_permission(self, request):
-        return request.user.is_staff
+        return super().has_add_permission(request) and self._is_authorized_announcer(request.user)
 
     def has_view_permission(self, request, obj=None):
-        return request.user.is_staff
+        return super().has_view_permission(request, obj) and request.user.is_staff
 
     def has_change_permission(self, request, obj=None):
         return False
@@ -49,8 +58,8 @@ class NotificationAdmin(admin.ModelAdmin):
         return False
 
     def save_model(self, request, obj, form, change):
-        if change or not request.user.is_staff:
-            raise PermissionDenied("Only staff may publish a new system announcement.")
+        if change or not self._is_authorized_announcer(request.user):
+            raise PermissionDenied("Only an authorized administrator may publish a new system announcement.")
         obj.recipient = None
         obj.category = Notification.Category.SYSTEM
         obj.event_type = Notification.EventType.SYSTEM_ANNOUNCEMENT
@@ -60,6 +69,11 @@ class NotificationAdmin(admin.ModelAdmin):
         obj.event_key = f"announcement:{uuid.uuid4().hex}"
         obj.full_clean()
         super().save_model(request, obj, form, change)
+        AuditEvent.objects.create(
+            actor=request.user,
+            action="admin.announcement.created",
+            metadata={"notification_id": str(obj.pk)},
+        )
 
 
 @admin.register(NotificationState)

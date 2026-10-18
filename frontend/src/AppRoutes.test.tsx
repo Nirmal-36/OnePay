@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { ApiTransaction } from './api/payments';
+import type { ApiNotification } from './api/notifications';
 import { BrowserQRCodeReader } from '@zxing/browser';
 import { DemoProvider, useDemo } from './context/DemoProvider';
 import { AuthProvider } from './context/AuthContext';
@@ -9,6 +10,7 @@ import { ToastProvider } from './context/ToastProvider';
 import AppRoutes from './AppRoutes';
 
 const testUser = { id: 1, email: 'ananya@example.test', full_name: 'Ananya Sharma', date_joined: '2026-10-15T12:00:00Z' };
+const otherAccountUser = { id: 2, email: 'other@example.test', full_name: 'Other User', date_joined: '2026-10-15T12:00:00Z' };
 const now = '2026-10-15T12:00:00Z';
 const demoQrContent = 'onepay://pay?v=1&upi=user1%40onepay&currency=INR&mode=demo&sig=test-signature';
 const sampleRecipients = [
@@ -42,6 +44,20 @@ const makeTransaction = (overrides: Partial<ApiTransaction> = {}): ApiTransactio
   ...overrides,
 });
 
+const makeNotification = (overrides: Partial<ApiNotification> = {}): ApiNotification => ({
+  id: '00000000-0000-4000-8000-000000000001',
+  category: 'payment',
+  event_type: 'payment.successful',
+  title: 'Payment completed',
+  message: 'Your simulated payment completed. No real money moved.',
+  related_transaction_reference: `OPW-${'A'.repeat(32)}`,
+  navigation_target: `/transactions/OPW-${'A'.repeat(32)}`,
+  read: false,
+  dismissed: false,
+  created_at: now,
+  ...overrides,
+});
+
 const mockTransactions: ApiTransaction[] = [
   makeTransaction(),
   makeTransaction({
@@ -67,81 +83,107 @@ const jsonResponse = (status: number, body: unknown) => ({
   text: async () => status === 204 ? '' : JSON.stringify(body),
 }) as Response;
 
-function installMockApi(options: { historyFailures?: number; historyFailureStatus?: number; transactions?: ApiTransaction[] } = {}) {
+function installMockApi(options: {
+  historyFailures?: number;
+  historyFailureStatus?: number;
+  transactions?: ApiTransaction[];
+  notifications?: ApiNotification[];
+  notificationsByUser?: Record<number, ApiNotification[]>;
+  notificationFailures?: number;
+  notificationFailureStatus?: number;
+} = {}) {
   const transactions = [...(options.transactions ?? mockTransactions)];
   let historyFailuresRemaining = options.historyFailures ?? 0;
+  let notificationFailuresRemaining = options.notificationFailures ?? 0;
   const idempotentTransactions = new Map<string, ApiTransaction>();
   const recipientStore = sampleRecipients.map((recipient) => ({ ...recipient }));
-  type MockNotification = {
-    id: string; category: string; event_type: string; title: string; message: string;
-    related_transaction_reference: string | null; navigation_target: string;
-    read: boolean; dismissed: boolean; created_at: string;
+  const otherUser = otherAccountUser;
+  let currentUser = testUser;
+  let authenticated = true;
+  let notificationSequence = 1;
+  const notificationStores = new Map<number, ApiNotification[]>();
+  notificationStores.set(testUser.id, [...(options.notifications ?? [])]);
+  Object.entries(options.notificationsByUser ?? {}).forEach(([userId, entries]) => {
+    notificationStores.set(Number(userId), [...entries]);
+  });
+  const getNotifications = () => {
+    let store = notificationStores.get(currentUser.id);
+    if (!store) {
+      store = [];
+      notificationStores.set(currentUser.id, store);
+    }
+    return store;
   };
-  const notificationStore: MockNotification[] = [];
-  const addOutcomeNotification = (transaction: ApiTransaction) => {
-    const category = transaction.kind === 'bill' ? 'bill' : transaction.kind === 'recharge' ? 'recharge' : transaction.kind === 'topup' ? 'wallet' : 'payment';
-    const noun = transaction.kind === 'bill' ? 'bill payment' : transaction.kind === 'recharge' ? 'recharge' : transaction.kind === 'topup' ? 'funds addition' : 'payment';
-    const status = transaction.status;
-    if (status === 'pending') return;
-    const successful = status === 'successful';
-    const title = transaction.kind === 'topup'
-      ? 'Demo funds added'
-      : `Demo ${noun} ${successful ? 'completed' : status === 'reversed' ? 'reversed' : 'failed'}`;
-    const message = successful
-      ? `Your simulated ${noun} completed. No real money moved.`
-      : status === 'reversed'
-        ? 'The simulated transaction was reversed and the demo balance was credited back.'
-        : 'The local simulation declined it and refunded the demo debit. No real money moved.';
-    notificationStore.unshift({
-      id: `mock-notification-${notificationStore.length + 1}`,
+  const pushNotification = (notice: Omit<ApiNotification, 'id' | 'created_at' | 'read' | 'dismissed'>) => {
+    const id = `10000000-0000-4000-8000-${String(notificationSequence++).padStart(12, '0')}`;
+    getNotifications().unshift(makeNotification({
+      ...notice,
+      id,
+      created_at: new Date().toISOString(),
+      read: false,
+      dismissed: false,
+    }));
+  };
+  const recordTransactionNotification = (transaction: ApiTransaction) => {
+    const category = transaction.kind === 'topup' ? 'wallet'
+      : transaction.kind === 'bill' ? 'bill'
+        : transaction.kind === 'recharge' ? 'recharge' : 'payment';
+    const event_type = category === 'wallet' ? 'wallet.topup_successful' : `${category}.${transaction.status}`;
+    const noun = category === 'wallet' ? 'Demo funds' : category === 'bill' ? 'Bill payment' : category === 'recharge' ? 'Recharge' : 'Payment';
+    const title = category === 'wallet' ? 'Demo funds added'
+      : `${noun} ${transaction.status === 'successful' ? 'completed' : transaction.status}`;
+    const message = transaction.status === 'failed'
+      ? 'The local simulation declined it and refunded the demo debit. No provider was contacted.'
+      : transaction.status === 'pending'
+        ? 'The OnePay local simulator has not returned a final result; this operation remains pending.'
+        : category === 'wallet'
+          ? 'Simulated funds were added to your OnePay wallet. No money was collected.'
+          : 'The simulated operation completed. No real money moved.';
+    pushNotification({
       category,
-      event_type: `${category}.${status === 'reversed' ? 'reversed' : status}`,
+      event_type,
       title,
       message,
       related_transaction_reference: transaction.reference,
       navigation_target: `/transactions/${transaction.reference}`,
-      read: false,
-      dismissed: false,
-      created_at: now,
     });
   };
+
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'https://onepay.test');
     const method = init?.method ?? 'GET';
-    if (url.pathname === '/api/v1/auth/me/') return jsonResponse(200, { user: testUser });
+    if (url.pathname === '/api/v1/auth/me/') {
+      return authenticated
+        ? jsonResponse(200, { user: currentUser })
+        : jsonResponse(401, { error: { status: 401, message: 'Sign in required.', details: null } });
+    }
     if (url.pathname === '/api/v1/auth/csrf/') return jsonResponse(200, { csrfToken: 'test-csrf-token' });
-    if (url.pathname === '/api/v1/notifications/' && method === 'GET') {
-      let matched = notificationStore.filter((item) => !item.dismissed || url.searchParams.get('include_dismissed') === 'true');
-      const category = url.searchParams.get('category');
-      const read = url.searchParams.get('read');
-      if (category) matched = matched.filter((item) => item.category === category);
-      if (read !== null) matched = matched.filter((item) => item.read === (read === 'true'));
-      const page = Number(url.searchParams.get('page') ?? 1);
-      const pageSize = Number(url.searchParams.get('page_size') ?? 20);
-      const totalPages = matched.length ? Math.ceil(matched.length / pageSize) : 0;
-      return jsonResponse(200, { count: matched.length, page, page_size: pageSize, total_pages: totalPages, has_next: page < totalPages, has_previous: page > 1, results: matched.slice((page - 1) * pageSize, page * pageSize) });
+    if (url.pathname === '/api/v1/auth/logout/' && method === 'POST') {
+      authenticated = false;
+      return jsonResponse(200, { message: 'Signed out.', csrfToken: 'test-csrf-token' });
     }
-    if (url.pathname === '/api/v1/notifications/unread-count/' && method === 'GET') return jsonResponse(200, { unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
-    if (url.pathname === '/api/v1/notifications/read-all/' && method === 'POST') {
-      let updated = 0;
-      notificationStore.forEach((item) => { if (!item.read && !item.dismissed) { item.read = true; updated += 1; } });
-      return jsonResponse(200, { updated, unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
+    if (url.pathname === '/api/v1/auth/login/' && method === 'POST') {
+      const data = JSON.parse(String(init?.body ?? '{}')) as { email?: string };
+      currentUser = data.email === testUser.email ? testUser : otherUser;
+      authenticated = true;
+      pushNotification({
+        category: 'security', event_type: 'security.login_successful',
+        title: 'Successful sign-in to OnePay', message: 'Your OnePay account was signed in successfully.',
+        related_transaction_reference: null, navigation_target: '/profile',
+      });
+      return jsonResponse(200, { user: currentUser, csrfToken: 'test-csrf-token' });
     }
-    if (url.pathname === '/api/v1/notifications/dismiss-all/' && method === 'POST') {
-      let updated = 0;
-      notificationStore.forEach((item) => { if (!item.dismissed) { item.dismissed = true; updated += 1; } });
-      return jsonResponse(200, { updated, unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
-    }
-    const notificationAction = url.pathname.match(/^\/api\/v1\/notifications\/([^/]+)\/(read|dismiss)\/$/);
-    if (notificationAction && method === 'POST') {
-      const notification = notificationStore.find((item) => item.id === decodeURIComponent(notificationAction[1] ?? ''));
-      if (!notification) return jsonResponse(404, { detail: 'Notification not found.' });
-      if (notificationAction[2] === 'read') {
-        notification.read = true;
-        return jsonResponse(200, { notification, unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
+    if (url.pathname === '/api/v1/auth/profile/' && method === 'PATCH') {
+      const data = JSON.parse(String(init?.body ?? '{}')) as { full_name?: string };
+      const changed = Boolean(data.full_name && data.full_name !== currentUser.full_name);
+      currentUser = { ...currentUser, full_name: data.full_name ?? currentUser.full_name };
+      if (changed) {
+        pushNotification({
+          category: 'account', event_type: 'account.profile_updated', title: 'Profile updated',
+          message: 'Your OnePay account display name was updated.', related_transaction_reference: null, navigation_target: '/profile',
+        });
       }
-      notification.dismissed = true;
-      return jsonResponse(200, { dismissed: true, unread_count: notificationStore.filter((item) => !item.read && !item.dismissed).length });
+      return jsonResponse(200, { user: currentUser });
     }
     if (url.pathname === '/api/v1/payments/wallet/') return jsonResponse(200, { balance_minor: 2_458_000, currency: 'INR', updated_at: now });
     if (url.pathname === '/api/v1/payments/recipients/' && method === 'GET') return jsonResponse(200, recipientStore);
@@ -149,13 +191,42 @@ function installMockApi(options: { historyFailures?: number; historyFailureStatu
       const data = JSON.parse(String(init?.body ?? '{}')) as { display_name: string; upi_id: string };
       const recipient = { id: 99, display_name: data.display_name, upi_id: data.upi_id, is_default: false, created_at: now, updated_at: now };
       recipientStore.push(recipient);
+      pushNotification({
+        category: 'recipient', event_type: 'recipient.created', title: 'Recipient added',
+        message: 'A saved recipient was added to your OnePay account.', related_transaction_reference: null, navigation_target: '/recipients',
+      });
       return jsonResponse(201, recipient);
+    }
+    const recipientRoute = url.pathname.match(/^\/api\/v1\/payments\/recipients\/(\d+)\/$/);
+    if (recipientRoute && method === 'PATCH') {
+      const recipient = recipientStore.find((item) => item.id === Number(recipientRoute[1]));
+      if (!recipient) return jsonResponse(404, { error: { status: 404, message: 'Recipient not found.', details: null } });
+      const data = JSON.parse(String(init?.body ?? '{}')) as { display_name?: string; upi_id?: string };
+      const changed = Object.entries(data).some(([key, value]) => recipient[key as 'display_name' | 'upi_id'] !== value);
+      Object.assign(recipient, data, { updated_at: now });
+      if (changed) {
+        pushNotification({
+          category: 'recipient', event_type: 'recipient.updated', title: 'Recipient updated',
+          message: 'A saved recipient in your OnePay account was updated.', related_transaction_reference: null, navigation_target: '/recipients',
+        });
+      }
+      return jsonResponse(200, recipient);
+    }
+    if (recipientRoute && method === 'DELETE') {
+      const index = recipientStore.findIndex((item) => item.id === Number(recipientRoute[1]));
+      if (index < 0) return jsonResponse(404, { error: { status: 404, message: 'Recipient not found.', details: null } });
+      recipientStore.splice(index, 1);
+      pushNotification({
+        category: 'recipient', event_type: 'recipient.removed', title: 'Recipient removed',
+        message: 'A saved recipient was removed from your active OnePay contacts.', related_transaction_reference: null, navigation_target: '/recipients',
+      });
+      return jsonResponse(204, null);
     }
     if (url.pathname === '/api/v1/payments/qr/generate/' && method === 'POST') {
       return jsonResponse(200, {
         qr_content: demoQrContent,
-        display_name: testUser.full_name,
-        upi_id: `user${testUser.id}@onepay`,
+        display_name: currentUser.full_name,
+        upi_id: `user${currentUser.id}@onepay`,
         currency: 'INR',
         mode: 'demo',
       });
@@ -165,8 +236,8 @@ function installMockApi(options: { historyFailures?: number; historyFailureStatu
       if (data.qr_content === demoQrContent) {
         return jsonResponse(200, {
           recipient_id: null,
-          display_name: testUser.full_name,
-          upi_id: `user${testUser.id}@onepay`,
+          display_name: currentUser.full_name,
+          upi_id: `user${currentUser.id}@onepay`,
           currency: 'INR',
           mode: 'demo',
           verified: true,
@@ -178,14 +249,69 @@ function installMockApi(options: { historyFailures?: number; historyFailureStatu
       const upiId = url.searchParams.get('identifier')?.toLowerCase() ?? '';
       const saved = recipientStore.find((recipient) => recipient.upi_id === upiId);
       if (saved) return jsonResponse(200, saved);
-      if (upiId === `user${testUser.id}@onepay`) {
-        return jsonResponse(200, { id: null, display_name: testUser.full_name, upi_id: upiId, is_active: true, is_default: false });
+      if (upiId === `user${currentUser.id}@onepay`) {
+        return jsonResponse(200, { id: null, display_name: currentUser.full_name, upi_id: upiId, is_active: true, is_default: false });
       }
       if (upiId.endsWith('@onepay') || upiId.endsWith('@mock')) {
         const local = upiId.split('@')[0] ?? 'demo';
         return jsonResponse(200, { id: null, display_name: local.replace(/[._-]/g, ' '), upi_id: upiId, is_active: true, is_default: false });
       }
       return jsonResponse(404, { error: { status: 404, message: 'Recipient not found.', details: null } });
+    }
+    if (url.pathname === '/api/v1/notifications/' && method === 'GET') {
+      if (notificationFailuresRemaining > 0) {
+        notificationFailuresRemaining -= 1;
+        const failureStatus = options.notificationFailureStatus ?? 503;
+        return jsonResponse(failureStatus, { error: { status: failureStatus, message: 'Notification service temporarily unavailable.', details: null } });
+      }
+      const category = url.searchParams.get('category') ?? '';
+      const readFilter = url.searchParams.get('read');
+      const fromDate = url.searchParams.get('date_from') ?? '';
+      const toDate = url.searchParams.get('date_to') ?? '';
+      const includeDismissed = url.searchParams.get('include_dismissed') === 'true';
+      const matched = getNotifications().filter((notice) => {
+        const createdDate = notice.created_at.slice(0, 10);
+        return (includeDismissed || !notice.dismissed)
+          && (!category || notice.category === category)
+          && (readFilter === null || notice.read === (readFilter === 'true'))
+          && (!fromDate || createdDate >= fromDate)
+          && (!toDate || createdDate <= toDate);
+      });
+      const page = Number(url.searchParams.get('page') ?? 1);
+      const pageSize = Number(url.searchParams.get('page_size') ?? 20);
+      const totalPages = matched.length ? Math.ceil(matched.length / pageSize) : 0;
+      return jsonResponse(200, {
+        count: matched.length, page, page_size: pageSize, total_pages: totalPages,
+        has_next: page < totalPages, has_previous: page > 1,
+        results: matched.slice((page - 1) * pageSize, page * pageSize),
+      });
+    }
+    if (url.pathname === '/api/v1/notifications/unread-count/' && method === 'GET') {
+      return jsonResponse(200, { unread_count: getNotifications().filter((notice) => !notice.read && !notice.dismissed).length });
+    }
+    if (url.pathname === '/api/v1/notifications/read-all/' && method === 'POST') {
+      const store = getNotifications();
+      const active = store.filter((notice) => !notice.dismissed);
+      active.forEach((notice) => { notice.read = true; });
+      return jsonResponse(200, { updated: active.length, unread_count: 0 });
+    }
+    if (url.pathname === '/api/v1/notifications/dismiss-all/' && method === 'POST') {
+      const store = getNotifications();
+      const active = store.filter((notice) => !notice.dismissed);
+      active.forEach((notice) => { notice.dismissed = true; });
+      return jsonResponse(200, { updated: active.length, unread_count: store.filter((notice) => !notice.read && !notice.dismissed).length });
+    }
+    const notificationAction = url.pathname.match(/^\/api\/v1\/notifications\/([^/]+)\/(read|dismiss)\/$/);
+    if (notificationAction && method === 'POST') {
+      const notificationId = decodeURIComponent(notificationAction[1] ?? '');
+      const notice = getNotifications().find((item) => item.id === notificationId);
+      if (!notice) return jsonResponse(404, { error: { status: 404, message: 'Notification not found.', details: null } });
+      if (notificationAction[2] === 'read') notice.read = true;
+      else notice.dismissed = true;
+      return jsonResponse(200, {
+        ...(notificationAction[2] === 'read' ? { notification: notice } : { dismissed: true }),
+        unread_count: getNotifications().filter((item) => !item.read && !item.dismissed).length,
+      });
     }
     if (url.pathname === '/api/v1/payments/transactions/history/' && method === 'GET') {
       if (historyFailuresRemaining > 0) {
@@ -231,13 +357,14 @@ function installMockApi(options: { historyFailures?: number; historyFailureStatu
       if (existing) return jsonResponse(200, existing);
       const isQrTransfer = data.qr_content === demoQrContent;
       const savedRecipient = data.recipient_id ? recipientStore.find((recipient) => recipient.id === data.recipient_id) : undefined;
-      const title = data.kind === 'transfer' ? isQrTransfer ? testUser.full_name : savedRecipient?.display_name ?? recipientStore.find((recipient) => recipient.upi_id === data.upi_id)?.display_name ?? data.upi_id ?? 'Demo recipient'
+      const title = data.kind === 'transfer' ? isQrTransfer ? currentUser.full_name : savedRecipient?.display_name ?? recipientStore.find((recipient) => recipient.upi_id === data.upi_id)?.display_name ?? data.upi_id ?? 'Demo recipient'
         : data.kind === 'topup' ? 'OnePay Demo Wallet' : data.provider ?? `OnePay Mock ${data.service ?? 'Utility'}`;
-      const identifier = isQrTransfer ? `user${testUser.id}@onepay` : data.upi_id ?? savedRecipient?.upi_id ?? (data.recipient_reference ? `Ending ${data.recipient_reference.replace(/\D/g, '').slice(-4)}` : '');
+      const identifier = isQrTransfer ? `user${currentUser.id}@onepay` : data.upi_id ?? savedRecipient?.upi_id ?? (data.recipient_reference ? `Ending ${data.recipient_reference.replace(/\D/g, '').slice(-4)}` : '');
       const status: ApiTransaction['status'] = data.kind !== 'transfer' && identifier === 'Ending 0000' ? 'failed'
         : data.kind !== 'transfer' && identifier === 'Ending 9999' ? 'pending' : 'successful';
+      const reference = `OPW-${String(transactions.length + 1).padStart(32, '0')}`;
       const created = makeTransaction({
-        id: `tx-${transactions.length + 1}`, reference: `OPW-TEST-${transactions.length + 1}`,
+        id: `tx-${transactions.length + 1}`, reference,
         recipient_id: data.kind === 'transfer' ? isQrTransfer ? null : data.recipient_id ?? savedRecipient?.id ?? null : null,
         recipient_name: title,
         recipient_identifier: identifier,
@@ -248,14 +375,22 @@ function installMockApi(options: { historyFailures?: number; historyFailureStatu
         ] as ApiTransaction['status_history'],
       });
       transactions.unshift(created);
-      addOutcomeNotification(created);
       if (requestKey) idempotentTransactions.set(requestKey, created);
+      recordTransactionNotification(created);
       return jsonResponse(200, created);
     }
     if (url.pathname === '/api/v1/payments/wallet/topups/' && method === 'POST') {
       const data = JSON.parse(String(init?.body ?? '{}')) as { amount_minor: number };
-      const topup = makeTransaction({ id: `tx-topup-${transactions.length}`, reference: 'OPW-TEST-TOPUP', recipient_name: 'OnePay Demo Wallet', recipient_id: null, recipient_identifier: '', kind: 'topup', service: '', amount_minor: data.amount_minor, status: 'successful' });
+      const requestKey = (init?.headers as Record<string, string> | undefined)?.['Idempotency-Key'] ?? '';
+      const existing = idempotentTransactions.get(requestKey);
+      if (existing) return jsonResponse(200, existing);
+      const topup = makeTransaction({
+        id: `tx-topup-${transactions.length}`, reference: `OPW-${String(transactions.length + 10).padStart(32, '0')}`,
+        recipient_name: 'OnePay Demo Wallet', recipient_id: null, recipient_identifier: '', kind: 'topup', service: '', amount_minor: data.amount_minor, status: 'successful',
+      });
       transactions.unshift(topup);
+      if (requestKey) idempotentTransactions.set(requestKey, topup);
+      recordTransactionNotification(topup);
       return jsonResponse(200, topup);
     }
     const routeMatch = url.pathname.match(/^\/api\/v1\/payments\/transactions\/([^/]+)\//);
@@ -264,11 +399,6 @@ function installMockApi(options: { historyFailures?: number; historyFailureStatu
       const current = transactions.find((item) => item.reference === reference) ?? makeTransaction({ reference });
       if (url.pathname.endsWith('/receipt/')) return jsonResponse(200, { transaction: current, notice: 'This is a OnePay simulated transaction receipt. No real money was transferred.' });
       if (url.pathname.endsWith('/status/')) return jsonResponse(200, { reference, status: current.status, updated_at: now, completed_at: current.completed_at });
-      if (url.pathname.endsWith('/reverse/') && method === 'POST') {
-        return jsonResponse(403, {
-          detail: 'Customer-initiated transaction reversals are not permitted.',
-        });
-      }
       return jsonResponse(200, current);
     }
     throw new Error(`Unexpected OnePay API endpoint: ${method} ${url.pathname}`);
@@ -276,7 +406,6 @@ function installMockApi(options: { historyFailures?: number; historyFailureStatu
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
-
 function renderRoute(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -292,7 +421,7 @@ function renderRoute(path: string) {
 }
 
 function RepeatedPaymentHarness() {
-  const { recordDemoPayment, notifications } = useDemo();
+  const { recordDemoPayment, notifications, paymentDataLoading } = useDemo();
   const repeats = async () => {
     const payment = {
       kind: 'bill' as const, service: 'electricity', provider: 'OnePay Mock Electricity',
@@ -301,8 +430,8 @@ function RepeatedPaymentHarness() {
     await recordDemoPayment(payment);
     await recordDemoPayment(payment);
   };
-  const alertCount = notifications.filter((notification) => notification.title === 'Demo bill payment completed').length;
-  return <><button type="button" onClick={() => void repeats()}>Repeat same simulated bill</button><p>Outcome alerts: {alertCount}</p></>;
+  const alertCount = notifications.filter((notification) => notification.eventType === 'bill.successful').length;
+  return <><button type="button" disabled={paymentDataLoading} onClick={() => void repeats()}>Repeat same simulated bill</button><p>Outcome notifications: {alertCount}</p></>;
 }
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
@@ -325,6 +454,32 @@ describe('application routes', () => {
     installMockApi();
     renderRoute(path);
     expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument();
+  });
+
+  it('does not offer customer reversal and keeps the receipt action on completed payments', async () => {
+    installMockApi();
+    renderRoute('/transactions/OPW-HISTORY-ROHAN');
+    expect(await screen.findByRole('heading', { name: 'Transaction details' })).toBeInTheDocument();
+    expect(await screen.findByText('Lunch')).toBeInTheDocument();
+    expect(screen.getByText('OPW-HISTORY-ROHAN')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Reverse demo payment/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'View receipt' }));
+    expect(await screen.findByRole('heading', { name: 'Transaction receipt' })).toBeInTheDocument();
+    expect(await screen.findByText('This is a OnePay simulated transaction receipt. No real money was transferred.')).toBeInTheDocument();
+    expect(screen.getByText('OPW-HISTORY-ROHAN')).toBeInTheDocument();
+  });
+
+  it('shows check indicators for successful and internally reversed history events', async () => {
+    installMockApi();
+    const { container } = renderRoute('/transactions/OPW-HISTORY-KAVYA');
+    expect(await screen.findByRole('heading', { name: 'Transaction details' })).toBeInTheDocument();
+    const successfulIndicator = container.querySelector('.timeline-event.status-successful .timeline-dot svg');
+    const reversedIndicator = container.querySelector('.timeline-event.status-reversed .timeline-dot svg');
+
+    expect(successfulIndicator?.getAttribute('class')).toMatch(/\blucide-check\b/);
+    expect(reversedIndicator?.getAttribute('class')).toMatch(/\blucide-check\b/);
+    expect(container.querySelector('.transaction-detail-status strong')).toHaveTextContent('Reversed');
   });
 
   it('navigates to Send money from the main navigation', async () => {
@@ -386,51 +541,17 @@ describe('application routes', () => {
     expect(screen.getByText(/Ending 3210/)).toBeInTheDocument();
   });
 
-  it('deduplicates in-app outcome alerts when the server replays an idempotent request', async () => {
+  it('deduplicates backend outcome notifications when the server replays an idempotent request', async () => {
     const fetchMock = installMockApi();
-
-    render(
-      <AuthProvider>
-        <DemoProvider>
-          <ToastProvider>
-            <RepeatedPaymentHarness />
-          </ToastProvider>
-        </DemoProvider>
-      </AuthProvider>,
-    );
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          ([input]) =>
-            String(input).endsWith('/api/v1/notifications/unread-count/'),
-        ),
-      ).toBe(true);
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Repeat same simulated bill' }));
-
-    await waitFor(() => {
-      const posts = fetchMock.mock.calls.filter(
-        ([input, init]) =>
-          String(input).endsWith('/payments/transactions/') &&
-          init?.method === 'POST',
-      );
-      expect(posts).toHaveLength(2);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText('Outcome alerts: 1')).toBeInTheDocument();
-    });
-
-    const posts = fetchMock.mock.calls.filter(
-      ([input, init]) =>
-        String(input).endsWith('/payments/transactions/') &&
-        init?.method === 'POST',
-    );
-
+    render(<AuthProvider><DemoProvider><ToastProvider><RepeatedPaymentHarness /></ToastProvider></DemoProvider></AuthProvider>);
+    const repeatButton = screen.getByRole('button', { name: 'Repeat same simulated bill' });
+    await waitFor(() => expect(repeatButton).toBeEnabled());
+    fireEvent.click(repeatButton);
+    expect(await screen.findByText('Outcome notifications: 1')).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/payments/transactions/') && init?.method === 'POST')).toHaveLength(2));
+    const posts = fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/payments/transactions/') && init?.method === 'POST');
     const firstHeaders = posts[0]?.[1]?.headers as Record<string, string>;
     const secondHeaders = posts[1]?.[1]?.headers as Record<string, string>;
-
     expect(firstHeaders['Idempotency-Key']).toBe('repeat-bill-key-0001');
     expect(secondHeaders['Idempotency-Key']).toBe(firstHeaders['Idempotency-Key']);
   });
@@ -451,7 +572,7 @@ describe('application routes', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     fireEvent.click(screen.getAllByRole('link', { name: /Notifications/ })[0]!);
     expect(await screen.findByRole('heading', { name: 'Notifications' })).toBeInTheDocument();
-    expect(screen.getByText('Demo bill payment failed')).toBeInTheDocument();
+    expect(screen.getByText('Bill payment failed')).toBeInTheDocument();
     expect(screen.getByText(/local simulation declined it and refunded/)).toBeInTheDocument();
   });
 
@@ -683,20 +804,128 @@ describe('application routes', () => {
     expect(JSON.parse(String(creation?.body))).toEqual({ display_name: 'Lee Morgan', upi_id: 'lee.manual@onepay' });
   });
 
-  it('does not offer customer-initiated reversal for a transaction', async () => {
-    const fetchMock = installMockApi();
-    renderRoute('/transactions/OPW-HISTORY-ROHAN');
+  it('loads persisted notifications, displays the unread count, saves reads, and navigates internally', async () => {
+    const notification = makeNotification({ title: 'Persisted payment update' });
+    const alreadyRead = makeNotification({
+      id: '00000000-0000-4000-8000-000000000002',
+      event_type: 'security.login_successful', category: 'security', title: 'Previous sign-in',
+      navigation_target: '/profile', related_transaction_reference: null, read: true,
+    });
+    const fetchMock = installMockApi({ notifications: [notification, alreadyRead] });
+    const view = renderRoute('/notifications');
 
-    await screen.findByRole('heading', { name: 'Transaction details' });
+    expect(await screen.findByText('Persisted payment update')).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Notifications, 1 unread' }).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Open notification: Persisted payment update' }));
+    expect(await screen.findByRole('heading', { name: 'Transaction details' })).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Notifications' })[0]!).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith(`/${notification.id}/read/`) && init?.method === 'POST')).toBe(true);
 
-    expect(
-      screen.queryByRole('button', { name: /reverse/i }),
-    ).not.toBeInTheDocument();
+    view.unmount();
+    renderRoute('/notifications');
+    expect(await screen.findByText('Persisted payment update')).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Notifications' })[0]!).toBeInTheDocument();
+    expect(screen.queryByText('New')).not.toBeInTheDocument();
+  });
 
-    expect(
-      fetchMock.mock.calls.some(
-        ([input]) => String(input).includes('/reverse/'),
-      ),
-    ).toBe(false);
+  it('persists mark-all-read and single/all dismissal through the notification API', async () => {
+    const first = makeNotification({ title: 'First stored update' });
+    const second = makeNotification({ id: '00000000-0000-4000-8000-000000000002', title: 'Second stored update' });
+    const fetchMock = installMockApi({ notifications: [first, second] });
+    renderRoute('/notifications');
+    expect(await screen.findByText('First stored update')).toBeInTheDocument();
+    expect(screen.getByText('Second stored update')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mark all read' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/notifications/read-all/') && init?.method === 'POST')).toBe(true));
+    expect(await screen.findByText('Everything has been read')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification: First stored update' }));
+    await waitFor(() => expect(screen.queryByText('First stored update')).not.toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith(`/${first.id}/dismiss/`) && init?.method === 'POST')).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss all notifications' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Dismiss all notifications?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss all' }));
+    expect(await screen.findByRole('heading', { name: 'You’re all caught up' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith('/notifications/dismiss-all/') && init?.method === 'POST')).toBe(true);
+  });
+
+  it('filters and paginates notifications using backend query parameters', async () => {
+    const notices = Array.from({ length: 22 }, (_, index) => makeNotification({
+      id: `20000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      title: `Stored update ${String(index + 1).padStart(2, '0')}`,
+      category: index === 21 ? 'system' : 'payment',
+      event_type: index === 21 ? 'system.announcement' : 'payment.successful',
+      navigation_target: index === 21 ? '/help' : `/transactions/OPW-${'A'.repeat(32)}`,
+      related_transaction_reference: index === 21 ? null : `OPW-${'A'.repeat(32)}`,
+    }));
+    const fetchMock = installMockApi({ notifications: notices });
+    renderRoute('/notifications');
+    expect(await screen.findByText('22 notifications · page 1 of 2')).toBeInTheDocument();
+    expect(screen.getByText('Stored update 01')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(await screen.findByText('22 notifications · page 2 of 2')).toBeInTheDocument();
+    expect(screen.getByText('Stored update 22')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Filter notifications by category'), { target: { value: 'system' } });
+    expect(await screen.findByText('Stored update 22')).toBeInTheDocument();
+    expect(await screen.findByText('1 notification · page 1 of 1')).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('category=system'))).toBe(true);
+  });
+
+  it('shows a retry state when persisted notifications fail to load', async () => {
+    const fetchMock = installMockApi({ notificationFailures: 1 });
+    renderRoute('/notifications');
+    const error = await screen.findByRole('alert');
+    expect(within(error).getByText('Notification service temporarily unavailable.')).toBeInTheDocument();
+    fireEvent.click(within(error).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('heading', { name: 'You’re all caught up' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/v1/notifications/?')).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not navigate to an untrusted notification URL', async () => {
+    const unsafe = makeNotification({
+      title: 'Untrusted destination', navigation_target: 'https://attacker.example/collect',
+      related_transaction_reference: null,
+    });
+    installMockApi({ notifications: [unsafe] });
+    renderRoute('/notifications');
+    expect(await screen.findByText('Untrusted destination')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open notification: Untrusted destination' }));
+    expect(await screen.findByText('This notification destination is no longer available.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Notifications' })).toBeInTheDocument();
+  });
+
+  it('shows a backend notification after a real profile change', async () => {
+    installMockApi();
+    renderRoute('/profile');
+    expect(await screen.findByRole('heading', { name: 'Profile & settings' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Ananya New Name' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText('Account name saved · UPI ID kept in session')).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole('link', { name: 'Notifications, 1 unread' })[0]!);
+    expect(await screen.findByText('Profile updated')).toBeInTheDocument();
+    expect(screen.getByText('Your OnePay account display name was updated.')).toBeInTheDocument();
+  });
+
+  it('clears one account’s notifications after logout and account switch', async () => {
+    const privateNotice = makeNotification({ title: 'Private account one update' });
+    installMockApi({ notifications: [privateNotice], notificationsByUser: { 2: [] } });
+    renderRoute('/notifications');
+    expect(await screen.findByText('Private account one update')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    expect(await screen.findByRole('heading', { name: 'Sign in to OnePay' })).toBeInTheDocument();
+    expect(screen.queryByText('Private account one update')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Email address'), { target: { value: otherAccountUser.email } });
+    fireEvent.change(screen.getByLabelText('OnePay account password'), { target: { value: 'OnePay!SecurePass2026' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    expect((await screen.findAllByRole('link', { name: 'Notifications, 1 unread' })).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole('link', { name: 'Notifications, 1 unread' })[0]!);
+    expect(await screen.findByText('Successful sign-in to OnePay')).toBeInTheDocument();
+    expect(screen.queryByText('Private account one update')).not.toBeInTheDocument();
   });
 });

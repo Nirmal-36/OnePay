@@ -1,6 +1,7 @@
 import pytest
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.test import RequestFactory
@@ -11,7 +12,7 @@ from apps.notifications.admin import NotificationAdmin
 from apps.notifications.forms import SystemAnnouncementForm
 from apps.notifications.models import Notification, NotificationState
 from apps.notifications.services import create_notification, create_system_announcement
-from apps.payments.models import PaymentTransaction
+from apps.payments.models import AuditEvent, PaymentTransaction
 
 User = get_user_model()
 BASE = "/api/v1/notifications/"
@@ -30,6 +31,11 @@ def client_for(user):
     client = APIClient()
     client.force_authenticate(user=user)
     return client
+
+
+def authorize_announcement_admin(user):
+    permission = Permission.objects.get(content_type__app_label="notifications", codename="add_notification")
+    user.user_permissions.add(permission)
 
 
 def make_notification(user, *, event_type=Notification.EventType.PAYMENT_SUCCESSFUL, event_key="payment:event:one", target="/transactions"):
@@ -142,6 +148,7 @@ def test_read_and_dismiss_mutations_persist_for_one_user_and_bulk_operations():
 @pytest.mark.django_db
 def test_system_announcement_is_shared_once_with_independent_per_user_state():
     staff = make_user("staff-notice@example.test", is_staff=True)
+    authorize_announcement_admin(staff)
     first_user = make_user("announcement-one@example.test")
     second_user = make_user("announcement-two@example.test")
     announcement = create_system_announcement(
@@ -171,6 +178,7 @@ def test_system_announcement_is_shared_once_with_independent_per_user_state():
     assert Notification.objects.filter(is_announcement=True).count() == 1
     assert NotificationState.objects.filter(notification=announcement).count() == 1
     assert not NotificationState.objects.filter(notification=announcement, user=second_user).exists()
+    assert AuditEvent.objects.filter(action="admin.announcement.created", actor=staff).exists()
 
 
 @pytest.mark.django_db
@@ -246,6 +254,18 @@ def test_notification_created_inside_a_rolled_back_event_does_not_survive():
 
 
 @pytest.mark.django_db
+def test_staff_without_announcement_permission_cannot_publish():
+    staff = make_user("unprivileged-staff@example.test", is_staff=True)
+    with pytest.raises(PermissionError):
+        create_system_announcement(created_by=staff, title="No", message="Not authorized")
+
+    request = RequestFactory().post("/admin/apps/notifications/notification/add/")
+    request.user = staff
+    model_admin = NotificationAdmin(Notification, AdminSite())
+    assert model_admin.has_add_permission(request) is False
+
+
+@pytest.mark.django_db
 def test_public_notification_creation_is_not_exposed_and_staff_admin_creates_announcements():
     user = make_user()
     anonymous_create = APIClient().post(BASE, {"title": "Broadcast"}, format="json")
@@ -255,6 +275,7 @@ def test_public_notification_creation_is_not_exposed_and_staff_admin_creates_ann
     assert not Notification.objects.exists()
 
     staff = make_user("announcement-admin@example.test", is_staff=True)
+    authorize_announcement_admin(staff)
     form = SystemAnnouncementForm(data={
         "title": "Service update",
         "message": "OnePay demo maintenance is planned.",

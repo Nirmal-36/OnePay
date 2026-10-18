@@ -14,8 +14,8 @@ User = get_user_model()
 class RegistrationSerializer(serializers.Serializer):
     email = serializers.EmailField(max_length=254)
     full_name = serializers.CharField(max_length=120, trim_whitespace=True)
-    password = serializers.CharField(write_only=True, trim_whitespace=False, style={"input_type": "password"})
-    password_confirm = serializers.CharField(write_only=True, trim_whitespace=False, style={"input_type": "password"})
+    password = serializers.CharField(max_length=256, write_only=True, trim_whitespace=False, style={"input_type": "password"})
+    password_confirm = serializers.CharField(max_length=256, write_only=True, trim_whitespace=False, style={"input_type": "password"})
 
     def validate_email(self, value):
         normalized = value.strip().lower()
@@ -47,7 +47,7 @@ class RegistrationSerializer(serializers.Serializer):
 
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField(max_length=254)
-    password = serializers.CharField(write_only=True, trim_whitespace=False, style={"input_type": "password"})
+    password = serializers.CharField(max_length=256, write_only=True, trim_whitespace=False, style={"input_type": "password"})
 
     def validate_email(self, value):
         return value.strip().lower()
@@ -86,8 +86,8 @@ class PasswordResetRequestSerializer(serializers.Serializer):
 class PasswordResetConfirmSerializer(serializers.Serializer):
     uid = serializers.CharField(max_length=128)
     token = serializers.CharField(max_length=256)
-    new_password = serializers.CharField(write_only=True, trim_whitespace=False, style={"input_type": "password"})
-    confirm_password = serializers.CharField(write_only=True, trim_whitespace=False, style={"input_type": "password"})
+    new_password = serializers.CharField(max_length=256, write_only=True, trim_whitespace=False, style={"input_type": "password"})
+    confirm_password = serializers.CharField(max_length=256, write_only=True, trim_whitespace=False, style={"input_type": "password"})
 
     def validate(self, attrs):
         if attrs["new_password"] != attrs["confirm_password"]:

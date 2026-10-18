@@ -84,7 +84,8 @@ export default function ProfilePage() {
             <TextInput label="Email address" id="profile-email" name="email" type="email" autoComplete="email" value={form.email} readOnly hint="This is your OnePay sign-in address and cannot be changed here." />
             <TextInput label="Demo UPI ID" id="profile-upi" name="upiId" type="text" autoComplete="off" value={form.upiId} onChange={(event) => updateField('upiId', event.target.value)} error={errors.upiId} hint="Format check only. This ID is not verified or connected to a bank." />
             <div className="profile-secret-callout"><LockKeyhole size={17} /><span>Never enter a real banking PIN, password, OTP, or card security code in this demo.</span></div>
-            <>{saveError && <div className="auth-form-error" role="alert">{saveError}</div>}<div className="profile-form-actions"><span>{saved ? <span className="saved-inline"><Check size={15} />Account name saved · UPI ID kept in session</span> : 'Account name saves to your account; demo UPI ID is session-only.'}</span><Button type="submit" busy={saving} icon={<Save size={16} />}>{saving ? 'Saving…' : 'Save changes'}</Button></div></>
+            {saveError && <div className="auth-form-error" role="alert">{saveError}</div>}
+            <div className="profile-form-actions"><span>{saved ? <span className="saved-inline"><Check size={15} />Account name saved · UPI ID kept in session</span> : 'Account name saves to your account; demo UPI ID is session-only.'}</span><Button type="submit" busy={saving} icon={<Save size={16} />}>{saving ? 'Saving…' : 'Save changes'}</Button></div>
           </form>
         </section>
 

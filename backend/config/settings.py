@@ -1,6 +1,7 @@
 import os
 import secrets
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from corsheaders.defaults import default_headers
 
@@ -51,6 +52,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "config.observability.RequestIdAndErrorMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -64,7 +66,7 @@ MIDDLEWARE = [
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -96,6 +98,7 @@ AUTH_PASSWORD_VALIDATORS = [
 PASSWORD_RESET_TIMEOUT = int(os.environ.get("PASSWORD_RESET_TIMEOUT", "3600"))
 
 REST_FRAMEWORK = {
+    "DEFAULT_SCHEMA_CLASS": "rest_framework.schemas.openapi.AutoSchema",
     "DEFAULT_AUTHENTICATION_CLASSES": ["apps.accounts.authentication.CsrfSessionAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_THROTTLE_CLASSES": [
@@ -182,4 +185,81 @@ CACHES = {
         "BACKEND": os.environ.get("DJANGO_CACHE_BACKEND", "django.core.cache.backends.locmem.LocMemCache"),
         "LOCATION": os.environ.get("DJANGO_CACHE_LOCATION", "onepay-local"),
     },
+}
+
+
+if not DEBUG:
+    if len(SECRET_KEY) < 50 or SECRET_KEY.lower().startswith(("generate-", "replace-", "change-me")):
+        raise ImproperlyConfigured("Production requires a unique DJANGO_SECRET_KEY of at least 50 characters.")
+    if not os.environ.get("DJANGO_ALLOWED_HOSTS") or not ALLOWED_HOSTS or any(
+        "*" in host or host.startswith(".") or host.lower() in {"localhost", "127.0.0.1"}
+        for host in ALLOWED_HOSTS
+    ):
+        raise ImproperlyConfigured("Set exact, non-wildcard DJANGO_ALLOWED_HOSTS values for production.")
+    if not os.environ.get("CORS_ALLOWED_ORIGINS") or not CORS_ALLOWED_ORIGINS:
+        raise ImproperlyConfigured("Set exact HTTPS CORS_ALLOWED_ORIGINS values for production.")
+    if not os.environ.get("CSRF_TRUSTED_ORIGINS") or not CSRF_TRUSTED_ORIGINS:
+        raise ImproperlyConfigured("Set exact HTTPS CSRF_TRUSTED_ORIGINS values for production.")
+
+    for setting_name, origins in (
+        ("CORS_ALLOWED_ORIGINS", CORS_ALLOWED_ORIGINS),
+        ("CSRF_TRUSTED_ORIGINS", CSRF_TRUSTED_ORIGINS),
+    ):
+        for origin in origins:
+            parsed_origin = urlsplit(origin)
+            if (
+                parsed_origin.scheme != "https"
+                or not parsed_origin.netloc
+                or parsed_origin.path not in {"", "/"}
+                or parsed_origin.query
+                or parsed_origin.fragment
+                or "*" in origin
+                or parsed_origin.username
+                or parsed_origin.password
+            ):
+                raise ImproperlyConfigured(f"{setting_name} must contain exact HTTPS origins without paths or wildcards.")
+
+    frontend_origin = urlsplit(FRONTEND_BASE_URL)
+    if (
+        frontend_origin.scheme != "https"
+        or not frontend_origin.netloc
+        or frontend_origin.path not in {"", "/"}
+        or frontend_origin.query
+        or frontend_origin.fragment
+        or "*" in FRONTEND_BASE_URL
+    ):
+        raise ImproperlyConfigured("FRONTEND_BASE_URL must be an exact HTTPS origin in production.")
+    if not COOKIE_SECURE or not SECURE_SSL_REDIRECT:
+        raise ImproperlyConfigured("Production requires secure session/CSRF cookies and HTTPS redirects.")
+    if SECURE_HSTS_SECONDS < 31_536_000:
+        raise ImproperlyConfigured("Production requires at least one year of HSTS.")
+    if DATABASES["default"]["ENGINE"] != "django.db.backends.postgresql":
+        raise ImproperlyConfigured("Production deployments must use PostgreSQL, not SQLite.")
+    if CACHES["default"]["BACKEND"].endswith("LocMemCache"):
+        raise ImproperlyConfigured("Production API throttles require a shared cache backend.")
+    if EMAIL_BACKEND == "django.core.mail.backends.console.EmailBackend":
+        raise ImproperlyConfigured("Production must use a configured email delivery backend, not console output.")
+    if USE_X_FORWARDED_HOST and SECURE_PROXY_SSL_HEADER is None:
+        raise ImproperlyConfigured("USE_X_FORWARDED_HOST requires an explicitly trusted proxy configuration.")
+
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+if LOG_LEVEL not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+    raise ImproperlyConfigured("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL.")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"structured": {"()": "config.observability.JsonLogFormatter"}},
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "structured",
+        },
+    },
+    "loggers": {
+        "django": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "django.server": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "onepay": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+    },
+    "root": {"handlers": ["console"], "level": LOG_LEVEL},
 }

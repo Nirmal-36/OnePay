@@ -1,0 +1,148 @@
+{% extends "admin/base_site.html" %}
+
+{% block title %}OnePay operations dashboard | {{ site_title }}{% endblock %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <style>
+    .ops-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0 24px; }
+    .ops-card { border: 1px solid var(--hairline-color, #ddd); border-radius: 6px; padding: 14px; background: var(--body-bg, #fff); }
+    .ops-card h2 { margin: 0 0 8px; font-size: 13px; }
+    .ops-card strong { font-size: 22px; }
+    .ops-card small { display: block; margin-top: 6px; color: var(--body-quiet-color, #666); }
+    .ops-table { width: 100%; border-collapse: collapse; margin: 10px 0 24px; }
+    .ops-table th, .ops-table td { border-bottom: 1px solid var(--hairline-color, #ddd); padding: 8px; text-align: left; vertical-align: top; }
+    .ops-table th { font-weight: 600; }
+    .ops-section { margin: 24px 0; }
+    .ops-search { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+    .ops-search label { display: grid; gap: 4px; }
+    .ops-search input { min-width: min(420px, 80vw); }
+    .ops-alert { color: #ba2121; font-weight: 600; }
+    .ops-nav { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0 20px; }
+  </style>
+{% endblock %}
+
+{% block breadcrumbs %}
+  <div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">Home</a> &rsaquo; Operations dashboard
+  </div>
+{% endblock %}
+
+{% block content %}
+  <div id="content-main">
+    <p>Internal operational view of simulated OnePay activity only. No real payments or funds are processed.</p>
+    <nav class="ops-nav" aria-label="Operations navigation">
+      <a href="{% url 'audit-log-review' %}">Review audit log</a>
+      <a href="{% url 'admin:payments_paymenttransaction_changelist' %}">Read-only transaction list</a>
+      <a href="{% url 'admin:index' %}">Django admin home</a>
+    </nav>
+
+    <section class="ops-grid" aria-label="Operational metrics">
+      <div class="ops-card"><h2>Registered users</h2><strong>{{ user_count }}</strong></div>
+      <div class="ops-card"><h2>Active users</h2><strong>{{ active_user_count }}</strong></div>
+      <div class="ops-card"><h2>Simulated transactions</h2><strong>{{ transaction_count }}</strong></div>
+      <div class="ops-card"><h2>Successful outgoing volume</h2><strong>{{ successful_volume_minor }}</strong><small>INR paise · simulated</small></div>
+      <div class="ops-card"><h2>Successful wallet top-ups</h2><strong>{{ successful_topup_volume_minor }}</strong><small>INR paise · fictional credits</small></div>
+      <div class="ops-card"><h2>API server errors, last 24 hours</h2><strong>{{ error_count_24h }}</strong></div>
+      <div class="ops-card"><h2>Simulated pending / refund events, last 24 hours</h2><strong>{{ payment_incident_count_24h }}</strong><small>Local simulator outcomes only</small></div>
+    </section>
+
+    <section class="ops-section">
+      <h2>Transaction status counts</h2>
+      <table class="ops-table">
+        <thead><tr><th>Status</th><th>Count</th></tr></thead>
+        <tbody>
+          {% for row in status_rows %}
+            <tr><th scope="row">{{ row.status|title }}</th><td>{{ row.count }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="ops-section">
+      <h2>Investigate a transaction</h2>
+      <p>Search by exact OnePay reference. Recipient identifiers and free-text notes are intentionally not shown here.</p>
+      <form class="ops-search" method="get" action="{% url 'ops-dashboard' %}">
+        <label for="transaction-reference">Transaction reference
+          <input id="transaction-reference" name="reference" maxlength="40" value="{{ reference }}" autocomplete="off" spellcheck="false">
+        </label>
+        <button class="button" type="submit">Investigate</button>
+      </form>
+      {% if search_error %}<p class="ops-alert" role="alert">{{ search_error }}</p>{% endif %}
+
+      {% if reference and not search_error %}
+        {% if investigated_transaction %}
+          <h3>Transaction {{ investigated_transaction.reference }}</h3>
+          <table class="ops-table">
+            <tbody>
+              <tr><th scope="row">Owner</th><td>{{ investigated_transaction.sender.full_name }} (user #{{ investigated_transaction.sender_id }})</td></tr>
+              <tr><th scope="row">Recipient label</th><td>{{ investigated_transaction.recipient_name|default:"—" }}</td></tr>
+              <tr><th scope="row">Kind / service</th><td>{{ investigated_transaction.get_kind_display }}{% if investigated_transaction.service %} / {{ investigated_transaction.service }}{% endif %}</td></tr>
+              <tr><th scope="row">Status</th><td>{{ investigated_transaction.get_status_display }}</td></tr>
+              <tr><th scope="row">Amount</th><td>{{ investigated_transaction.amount_minor }} {{ investigated_transaction.currency }} paise (simulated)</td></tr>
+              <tr><th scope="row">Created</th><td>{{ investigated_transaction.created_at }}</td></tr>
+              <tr><th scope="row">Completed</th><td>{{ investigated_transaction.completed_at|default:"—" }}</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Status history</h3>
+          <table class="ops-table">
+            <thead><tr><th>Time</th><th>Transition</th><th>Actor ID</th><th>Reason</th></tr></thead>
+            <tbody>
+              {% for event in history %}
+                <tr><td>{{ event.created_at }}</td><td>{{ event.from_status|default:"created" }} → {{ event.to_status }}</td><td>{{ event.actor_id|default:"system" }}</td><td>{{ event.reason }}</td></tr>
+              {% empty %}<tr><td colspan="4">No status history is recorded.</td></tr>{% endfor %}
+            </tbody>
+          </table>
+
+          <h3>Ledger entries</h3>
+          <table class="ops-table">
+            <thead><tr><th>Time</th><th>Entry</th><th>Delta (INR paise)</th><th>Balance after (INR paise)</th></tr></thead>
+            <tbody>
+              {% for entry in ledger_entries %}
+                <tr><td>{{ entry.created_at }}</td><td>{{ entry.get_entry_type_display }}</td><td>{{ entry.amount_minor }}</td><td>{{ entry.balance_after_minor }}</td></tr>
+              {% empty %}<tr><td colspan="4">No ledger entries are recorded.</td></tr>{% endfor %}
+            </tbody>
+          </table>
+
+          <h3>Related audit events</h3>
+          <table class="ops-table">
+            <thead><tr><th>Time</th><th>Action</th><th>Actor ID</th></tr></thead>
+            <tbody>
+              {% for event in transaction_audit %}
+                <tr><td>{{ event.created_at }}</td><td>{{ event.action }}</td><td>{{ event.actor_id|default:"system" }}</td></tr>
+              {% empty %}<tr><td colspan="3">No audit events are recorded.</td></tr>{% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p>No transaction matches that reference.</p>
+        {% endif %}
+      {% endif %}
+    </section>
+
+    <section class="ops-section">
+      <h2>Recent API server errors (24 hours)</h2>
+      <table class="ops-table">
+        <thead><tr><th>Time</th><th>Route</th><th>HTTP</th><th>Error type</th><th>Request ID</th></tr></thead>
+        <tbody>
+          {% for event in recent_errors %}
+            <tr><td>{{ event.created_at }}</td><td>{{ event.route }}</td><td>{{ event.status_code }}</td><td>{{ event.error_type }}</td><td><code>{{ event.request_id }}</code></td></tr>
+          {% empty %}<tr><td colspan="5">No API server errors have been recorded in this period.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="ops-section">
+      <h2>Simulated processor pending / refund events (24 hours)</h2>
+      <table class="ops-table">
+        <thead><tr><th>Time</th><th>Event</th><th>Reference</th><th>Amount (INR paise)</th></tr></thead>
+        <tbody>
+          {% for event in recent_payment_incidents %}
+            <tr><td>{{ event.created_at }}</td><td>{{ event.action }}</td><td>{{ event.reference }}</td><td>{{ event.amount_minor }} {{ event.currency }}</td></tr>
+          {% empty %}<tr><td colspan="4">No simulated processor pending or refund events have been recorded.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </section>
+    <p class="quiet">Generated {{ generated_at }}. Metrics are derived from the local simulated ledger, not actual payment volume.</p>
+  </div>
+{% endblock %}

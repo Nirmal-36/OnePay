@@ -22,6 +22,8 @@ from apps.payments.services import (
     get_or_create_wallet,
     initiate_payment,
     list_recipients,
+    PaymentConflict,
+    reverse_transaction,
 )
 
 User = get_user_model()
@@ -29,9 +31,7 @@ BASE = "/api/v1/payments/"
 
 
 def make_user(email="ananya@example.test", full_name="Ananya Sharma"):
-    return User.objects.create_user(
-        email=email, password="OnePay!SecurePass2026", full_name=full_name
-    )
+    return User.objects.create_user(email=email, password="OnePay!SecurePass2026", full_name=full_name)
 
 
 def make_client(user):
@@ -70,27 +70,14 @@ def test_wallet_is_server_initialized_and_recipient_list_is_user_scoped():
     }
     assert len(recipients_response.data) == 5
     assert {item["upi_id"] for item in recipients_response.data} == {
-        "rohan@okaxis",
-        "kavya@okhdfcbank",
-        "arjun@okicici",
-        "meera@oksbi",
-        "dev@okaxis",
+        "rohan@okaxis", "kavya@okhdfcbank", "arjun@okicici", "meera@oksbi", "dev@okaxis",
     }
-    assert (
-        WalletLedgerEntry.objects.filter(
-            wallet__user=user, entry_type="opening"
-        ).count()
-        == 1
-    )
+    assert WalletLedgerEntry.objects.filter(wallet__user=user, entry_type="opening").count() == 1
 
     other = make_user(email="other@example.test", full_name="Other User")
     other_recipients = make_client(other).get(f"{BASE}recipients/")
     assert len(other_recipients.data) == 5
-    assert (
-        not Recipient.objects.filter(user=user)
-        .filter(pk__in=[item["id"] for item in other_recipients.data])
-        .exists()
-    )
+    assert not Recipient.objects.filter(user=user).filter(pk__in=[item["id"] for item in other_recipients.data]).exists()
 
 
 @pytest.mark.django_db
@@ -127,9 +114,7 @@ def test_recipient_lookup_add_edit_and_soft_delete_only_affect_current_user():
     assert deleted.status_code == 204
     assert client.get(f"{BASE}recipients/{recipient_id}/").status_code == 404
     assert Recipient.objects.get(pk=recipient_id).is_active is False
-    assert client.get(
-        f"{BASE}recipients/lookup/?identifier=lee.morgan%40onepay"
-    ).status_code == 404
+    assert client.get(f"{BASE}recipients/lookup/?identifier=lee.morgan%40onepay").status_code == 404
     removed_payment = client.post(
         f"{BASE}transactions/",
         {"kind": "transfer", "upi_id": "lee.morgan@onepay", "amount_minor": 1_000},
@@ -138,9 +123,7 @@ def test_recipient_lookup_add_edit_and_soft_delete_only_affect_current_user():
     )
     assert removed_payment.status_code == 400
 
-    stranger = make_client(
-        make_user(email="stranger@example.test", full_name="Stranger")
-    )
+    stranger = make_client(make_user(email="stranger@example.test", full_name="Stranger"))
     assert stranger.get(f"{BASE}recipients/{recipient_id}/").status_code == 404
 
 
@@ -155,15 +138,12 @@ def test_signed_demo_qr_is_resolved_by_backend_and_used_for_simulated_transfer()
     profile_identifier = f"user{user.pk}@onepay"
     assert qr_content.startswith("onepay://pay?")
     assert f"user{user.pk}%40onepay" in qr_content
-    assert set(dict(parse_qsl(urlsplit(qr_content).query))) == {
-        "v", "upi", "currency", "mode", "sig"
-    }
+    assert set(dict(parse_qsl(urlsplit(qr_content).query))) == {"v", "upi", "currency", "mode", "sig"}
     assert user.full_name not in qr_content
     assert generated.data["display_name"] == user.full_name
     assert generated.data["upi_id"] == profile_identifier
     assert generated.data["mode"] == "demo"
     assert generated.data["currency"] == "INR"
-
     caller_supplied_profile = client.post(
         f"{BASE}qr/generate/",
         {"upi_id": "user999999@onepay", "display_name": "Unverified name"},
@@ -206,9 +186,8 @@ def test_demo_qr_rejects_tampering_malformed_content_and_unsupported_recipients(
     user = make_user()
     client = make_client(user)
     valid_qr = create_demo_payment_qr(user)
-    tampered_qr = valid_qr.replace(
-        f"user{user.pk}%40onepay", "user999999%40onepay"
-    )
+    profile_identifier = f"user{user.pk}@onepay"
+    tampered_qr = valid_qr.replace(f"user{user.pk}%40onepay", "user999999%40onepay")
     unsupported_qr = "https://example.test/pay?upi=attacker%40bank"
     before = client.get(f"{BASE}wallet/").data["balance_minor"]
 
@@ -227,9 +206,7 @@ def test_demo_qr_rejects_tampering_malformed_content_and_unsupported_recipients(
         format="json",
         **headers("tampered-demo-qr-payment-01"),
     )
-    unknown_profile = client.get(
-        f"{BASE}recipients/lookup/?identifier=user999999%40onepay"
-    )
+    unknown_profile = client.get(f"{BASE}recipients/lookup/?identifier=user999999%40onepay")
     unknown_profile_payment = client.post(
         f"{BASE}transactions/",
         {"kind": "transfer", "upi_id": "user999999@onepay", "amount_minor": 12_400},
@@ -296,18 +273,8 @@ def test_duplicate_request_is_idempotent_and_key_cannot_be_reused_for_new_payloa
     list_recipients(user)
     payload = payment_payload()
 
-    first = client.post(
-        f"{BASE}transactions/",
-        payload,
-        format="json",
-        **headers("duplicate-payment-key-1"),
-    )
-    replay = client.post(
-        f"{BASE}transactions/",
-        payload,
-        format="json",
-        **headers("duplicate-payment-key-1"),
-    )
+    first = client.post(f"{BASE}transactions/", payload, format="json", **headers("duplicate-payment-key-1"))
+    replay = client.post(f"{BASE}transactions/", payload, format="json", **headers("duplicate-payment-key-1"))
     conflict = client.post(
         f"{BASE}transactions/",
         payment_payload(amount_minor=12_500),
@@ -319,10 +286,7 @@ def test_duplicate_request_is_idempotent_and_key_cannot_be_reused_for_new_payloa
     assert first.data["reference"] == replay.data["reference"]
     assert conflict.status_code == 409
     assert PaymentTransaction.objects.filter(sender=user).count() == 1
-    assert (
-        WalletLedgerEntry.objects.filter(wallet__user=user, entry_type="debit").count()
-        == 1
-    )
+    assert WalletLedgerEntry.objects.filter(wallet__user=user, entry_type="debit").count() == 1
     assert Wallet.objects.get(user=user).balance_minor == 2_445_600
 
 
@@ -349,34 +313,18 @@ def test_failed_simulated_payment_refunds_once_and_records_history_and_audit():
     assert response.data["status"] == "failed"
     assert replay.data["reference"] == response.data["reference"]
     assert Wallet.objects.get(user=user).balance_minor == before
-    assert (
-        WalletLedgerEntry.objects.filter(
-            transaction__reference=response.data["reference"]
-        ).count()
-        == 2
-    )
-    assert [item["to_status"] for item in response.data["status_history"]] == [
-        "pending",
-        "failed",
-    ]
-    assert AuditEvent.objects.filter(
-        transaction__reference=response.data["reference"]
-    ).exists()
+    assert WalletLedgerEntry.objects.filter(transaction__reference=response.data["reference"]).count() == 2
+    assert [item["to_status"] for item in response.data["status_history"]] == ["pending", "failed"]
+    assert AuditEvent.objects.filter(transaction__reference=response.data["reference"]).exists()
 
 
 @pytest.mark.django_db
-def test_network_failure_stays_pending_and_same_key_retry_settles_without_second_debit(
-    monkeypatch,
-):
+def test_network_failure_stays_pending_and_same_key_retry_settles_without_second_debit(monkeypatch):
     from apps.payments import services
 
     user = make_user()
     client = make_client(user)
-    payload = {
-        "kind": "transfer",
-        "upi_id": "network.demo@onepay",
-        "amount_minor": 8_000,
-    }
+    payload = {"kind": "transfer", "upi_id": "network.demo@onepay", "amount_minor": 8_000}
 
     def network_error(_transaction):
         raise services.PaymentNetworkError("local simulated outage")
@@ -390,11 +338,7 @@ def test_network_failure_stays_pending_and_same_key_retry_settles_without_second
     )
     debited_balance = Wallet.objects.get(user=user).balance_minor
 
-    monkeypatch.setattr(
-        services,
-        "simulate_payment",
-        lambda _transaction: PaymentTransaction.Status.SUCCESSFUL,
-    )
+    monkeypatch.setattr(services, "simulate_payment", lambda _transaction: PaymentTransaction.Status.SUCCESSFUL)
     settled = client.post(
         f"{BASE}transactions/",
         payload,
@@ -407,12 +351,7 @@ def test_network_failure_stays_pending_and_same_key_retry_settles_without_second
     assert settled.data["status"] == "successful"
     assert settled.data["reference"] == pending.data["reference"]
     assert Wallet.objects.get(user=user).balance_minor == debited_balance
-    assert (
-        WalletLedgerEntry.objects.filter(
-            transaction__reference=pending.data["reference"], entry_type="debit"
-        ).count()
-        == 1
-    )
+    assert WalletLedgerEntry.objects.filter(transaction__reference=pending.data["reference"], entry_type="debit").count() == 1
 
 
 @pytest.mark.django_db
@@ -647,56 +586,125 @@ def test_transaction_history_is_authenticated_and_scoped_to_the_request_user():
 
 
 @pytest.mark.django_db
-def test_customer_cannot_reverse_payment_but_internal_service_can():
+def test_customer_reversal_api_is_forbidden_and_leaves_the_ledger_unchanged():
     user = make_user()
     client = make_client(user)
-    balance_before = client.get(f"{BASE}wallet/").data["balance_minor"]
-
     payment = client.post(
         f"{BASE}transactions/",
         payment_payload(amount_minor=25_000),
         format="json",
         **headers("reversible-payment-key-01"),
     )
-
-    reversal_path = f"{BASE}transactions/{payment.data['reference']}/reverse/"
-    first = client.post(
-        reversal_path, {}, format="json", **headers("reverse-request-key-001")
+    transaction_obj = PaymentTransaction.objects.get(reference=payment.data["reference"])
+    wallet = Wallet.objects.get(user=user)
+    balance_before = wallet.balance_minor
+    ledger_before = list(
+        WalletLedgerEntry.objects.filter(wallet=wallet)
+        .order_by("id")
+        .values_list("entry_type", "amount_minor", "balance_after_minor")
     )
-    history = client.get(f"{BASE}transactions/")
-
-    assert first.status_code == 403
-    assert history.data[0]["status"] == "successful"
-    assert Wallet.objects.get(user=user).balance_minor == balance_before - 25_000
-    assert not WalletLedgerEntry.objects.filter(
-        transaction__reference=payment.data["reference"],
-        entry_type="reversal_credit",
-    ).exists()
-
-    from apps.payments.services import PaymentConflict, reverse_transaction
-
-    reversed_payment = reverse_transaction(
-        user, payment.data["reference"], "internal-reversal-key-001"
+    history_before = list(
+        TransactionStatusHistory.objects.filter(transaction=transaction_obj)
+        .order_by("id")
+        .values_list("from_status", "to_status", "reason")
     )
-    replay = reverse_transaction(
-        user, payment.data["reference"], "internal-reversal-key-001"
+    audit_before = AuditEvent.objects.filter(transaction=transaction_obj).count()
+
+    denied = client.post(
+        f"{BASE}transactions/{transaction_obj.reference}/reverse/",
+        {
+            "user_id": user.pk,
+            "account_id": user.pk,
+            "status": "reversed",
+            "amount_minor": 1,
+        },
+        format="json",
+        **headers("customer-reversal-key-001"),
+    )
+    unsupported_refund = client.post(
+        f"{BASE}transactions/{transaction_obj.reference}/refund/",
+        {"status": "reversed", "amount_minor": 1},
+        format="json",
+    )
+    detail_path = f"{BASE}transactions/{transaction_obj.reference}/"
+    mutation_payload = {"status": "reversed", "amount_minor": 1}
+    unsupported_updates = (
+        client.put(detail_path, mutation_payload, format="json"),
+        client.patch(detail_path, mutation_payload, format="json"),
+        client.delete(detail_path, mutation_payload, format="json"),
     )
 
-    assert reversed_payment.status == "reversed"
-    assert replay.reference == payment.data["reference"]
-    assert Wallet.objects.get(user=user).balance_minor == balance_before
-    assert (
-        WalletLedgerEntry.objects.filter(
-            transaction__reference=payment.data["reference"],
-            entry_type="reversal_credit",
-        ).count()
-        == 1
-    )
+    transaction_obj.refresh_from_db()
+    assert denied.status_code == 403
+    assert unsupported_refund.status_code == 404
+    assert [response.status_code for response in unsupported_updates] == [405, 405, 405]
+    assert transaction_obj.status == PaymentTransaction.Status.SUCCESSFUL
+    assert transaction_obj.amount_minor == payment.data["amount_minor"]
+    assert Wallet.objects.get(pk=wallet.pk).balance_minor == balance_before
+    assert list(
+        WalletLedgerEntry.objects.filter(wallet=wallet)
+        .order_by("id")
+        .values_list("entry_type", "amount_minor", "balance_after_minor")
+    ) == ledger_before
+    assert list(
+        TransactionStatusHistory.objects.filter(transaction=transaction_obj)
+        .order_by("id")
+        .values_list("from_status", "to_status", "reason")
+    ) == history_before
+    assert AuditEvent.objects.filter(transaction=transaction_obj).count() == audit_before
 
+
+@pytest.mark.django_db
+def test_reversal_endpoint_keeps_csrf_protection_and_has_no_staff_bypass():
+    user = make_user()
+    client = APIClient(enforce_csrf_checks=True)
+    client.force_login(user)
+    csrf = client.get("/api/v1/auth/csrf/").data["csrfToken"]
+    path = f"{BASE}transactions/OPW-UNKNOWN/reverse/"
+
+    missing_csrf = client.post(path, {}, format="json")
+    denied_customer = client.post(path, {}, format="json", HTTP_X_CSRFTOKEN=csrf)
+
+    staff = make_user(email="staff@example.test", full_name="Staff User")
+    staff.is_staff = True
+    staff.save(update_fields=("is_staff",))
+    denied_staff = make_client(staff).post(path, {}, format="json")
+
+    assert missing_csrf.status_code == denied_customer.status_code == denied_staff.status_code == 403
+    assert missing_csrf.data["error"]["message"].startswith("CSRF Failed:")
+    assert denied_customer.data["detail"] == "Customer-initiated transaction reversals are not permitted."
+
+
+@pytest.mark.django_db
+def test_internal_reversal_service_credits_wallet_once_and_preserves_history():
+    user = make_user()
+    client = make_client(user)
+    balance_before = client.get(f"{BASE}wallet/").data["balance_minor"]
+    payment = client.post(
+        f"{BASE}transactions/",
+        payment_payload(amount_minor=25_000),
+        format="json",
+        **headers("reversible-payment-key-02"),
+    )
+    reference = payment.data["reference"]
+
+    first = reverse_transaction(user, reference, "internal-reversal-key-001")
+    replay = reverse_transaction(user, reference, "internal-reversal-key-001")
     with pytest.raises(PaymentConflict):
-        reverse_transaction(
-            user, payment.data["reference"], "internal-reversal-key-002"
-        )
+        reverse_transaction(user, reference, "internal-reversal-key-002")
+    history = client.get(f"{BASE}transactions/")
+    detail = client.get(f"{BASE}transactions/{reference}/")
+
+    assert first.status == replay.status == PaymentTransaction.Status.REVERSED
+    assert first.reference == replay.reference == reference
+    assert Wallet.objects.get(user=user).balance_minor == balance_before
+    assert WalletLedgerEntry.objects.filter(
+        transaction__reference=reference,
+        entry_type=WalletLedgerEntry.EntryType.REVERSAL_CREDIT,
+    ).count() == 1
+    assert [item["to_status"] for item in detail.data["status_history"]] == ["pending", "successful", "reversed"]
+    assert history.data[0]["status"] == "reversed"
+    assert AuditEvent.objects.filter(transaction__reference=reference, action="payment.reversed").count() == 1
 
 
 @pytest.mark.django_db
@@ -710,21 +718,33 @@ def test_transaction_detail_and_receipt_do_not_disclose_another_users_payment():
         format="json",
         **headers("private-payment-key-001"),
     )
-    other_client = make_client(
-        make_user(email="intruder@example.test", full_name="Intruder")
-    )
+    other_client = make_client(make_user(email="intruder@example.test", full_name="Intruder"))
 
+    owner_transaction = PaymentTransaction.objects.get(reference=payment.data["reference"])
+    owner_wallet = Wallet.objects.get(user=owner)
+    balance_before = owner_wallet.balance_minor
+    ledger_count_before = WalletLedgerEntry.objects.filter(wallet=owner_wallet).count()
     detail = other_client.get(f"{BASE}transactions/{payment.data['reference']}/")
-    status_response = other_client.get(
-        f"{BASE}transactions/{payment.data['reference']}/status/"
+    status_response = other_client.get(f"{BASE}transactions/{payment.data['reference']}/status/")
+    receipt = other_client.get(f"{BASE}transactions/{payment.data['reference']}/receipt/")
+    forbidden_reversal = other_client.post(
+        f"{BASE}transactions/{payment.data['reference']}/reverse/",
+        {"user_id": owner.pk, "status": "reversed", "amount_minor": 1},
+        format="json",
     )
-    receipt = other_client.get(
-        f"{BASE}transactions/{payment.data['reference']}/receipt/"
+    unsupported_update = other_client.patch(
+        f"{BASE}transactions/{payment.data['reference']}/",
+        {"status": "reversed", "amount_minor": 1},
+        format="json",
     )
 
-    assert (
-        detail.status_code == status_response.status_code == receipt.status_code == 404
-    )
+    owner_transaction.refresh_from_db()
+    assert detail.status_code == status_response.status_code == receipt.status_code == 404
+    assert forbidden_reversal.status_code == 403
+    assert unsupported_update.status_code == 405
+    assert owner_transaction.status == PaymentTransaction.Status.SUCCESSFUL
+    assert Wallet.objects.get(pk=owner_wallet.pk).balance_minor == balance_before
+    assert WalletLedgerEntry.objects.filter(wallet=owner_wallet).count() == ledger_count_before
     assert other_client.get(f"{BASE}transactions/").data == []
 
 
@@ -754,22 +774,13 @@ def test_concurrent_payments_cannot_spend_the_same_demo_balance_twice():
             close_old_connections()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(
-            executor.map(
-                submit, ("concurrent-payment-key-01", "concurrent-payment-key-02")
-            )
-        )
+        results = list(executor.map(submit, ("concurrent-payment-key-01", "concurrent-payment-key-02")))
 
     wallet = Wallet.objects.get(user=user)
-    assert sorted(results) == [
-        "insufficient_balance",
-        PaymentTransaction.Status.SUCCESSFUL,
-    ]
+    assert sorted(results) == ["insufficient_balance", PaymentTransaction.Status.SUCCESSFUL]
     assert wallet.balance_minor == 958_000
     assert PaymentTransaction.objects.filter(sender=user).count() == 1
-    assert (
-        WalletLedgerEntry.objects.filter(wallet=wallet, entry_type="debit").count() == 1
-    )
+    assert WalletLedgerEntry.objects.filter(wallet=wallet, entry_type="debit").count() == 1
 
 
 @pytest.mark.django_db
@@ -779,13 +790,6 @@ def test_payment_endpoints_require_backend_authentication():
     reversal = client.post(f"{BASE}transactions/OPW-UNKNOWN/reverse/", {}, format="json")
     qr_generation = client.post(f"{BASE}qr/generate/", {}, format="json")
     qr_resolution = client.post(f"{BASE}qr/resolve/", {"qr_content": ""}, format="json")
-
-    assert (
-        response.status_code
-        == reversal.status_code
-        == qr_generation.status_code
-        == qr_resolution.status_code
-        == 401
-    )
+    assert response.status_code == reversal.status_code == qr_generation.status_code == qr_resolution.status_code == 401
     assert response.data["error"]["status"] == 401
     assert reversal.data["error"]["status"] == 401

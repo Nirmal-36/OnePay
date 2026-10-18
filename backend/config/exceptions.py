@@ -15,11 +15,14 @@ def api_exception_handler(exc, context):
         message = "Please review the submitted information."
         details = original
 
+    request = context.get("request")
+    request_id = getattr(request, "request_id", None)
     response.data = {
         "error": {
             "status": response.status_code,
             "message": message,
             "details": details,
+            "request_id": request_id,
         }
     }
     return response
@@ -27,6 +30,13 @@ def api_exception_handler(exc, context):
 
 def csrf_failure(request, reason=""):
     return JsonResponse(
-        {"error": {"status": 403, "message": "CSRF validation failed. Refresh the page and try again.", "details": None}},
+        {
+            "error": {
+                "status": 403,
+                "message": "CSRF validation failed. Refresh the page and try again.",
+                "details": None,
+                "request_id": getattr(request, "request_id", None),
+            }
+        },
         status=403,
     )

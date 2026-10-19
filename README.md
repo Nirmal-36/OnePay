@@ -122,6 +122,29 @@ Supported event coverage is intentionally limited to actual OnePay workflows: ou
 
 An active Django administrator, or an active staff account with the `notifications.add_notification` permission, can publish a system announcement using **Notifications → Add notification**; the admin forces the broadcast category/event and provides no recipient field. The `create_system_announcement()` service enforces the same permission. Announcement creation is audit-logged. There is deliberately no public create/broadcast endpoint. Only existing OnePay internal routes are accepted as navigation targets; invalid or stale transaction links are returned without a target.
 
+## Phase 7: intelligent spending analysis
+
+The `/insights` workspace turns the simulated payment ledger into an explainable spending review. It is implemented inside the existing `apps.analytics` application and reads the existing `PaymentTransaction` records; no payment, wallet, or notification behaviour is replaced.
+
+- **Overview** — completed outflow, average daily spending, largest expense, top category, month-over-month comparison, category donut, daily and monthly trends, weekday/weekend averages, merchant totals, budget progress, recent evidence-backed insights, and a searchable/filterable transaction table with category drill-down.
+- **Patterns** — deterministic observations (category concentration, frequent small payments, recurring payments, trend direction, unusual expenses relative to the user's own prior 180 days, category growth, and review opportunities). Every card exposes its evidence, baseline, calculation, confidence/data sufficiency, and a suggested next step. Forecasts use moving averages with an observed-range band and are withheld until 60 days of history, 10 completed payments, and 2 complete months exist. Anomalies require at least 10 prior payments.
+- **Monthly report** — a plain-language executive summary, category and merchant totals, largest transactions, recurring payments, budget performance, unusual payments, savings opportunities, a six-month trend, and a CSV export generated from the same stored aggregates. Income remains explicitly unavailable because OnePay does not record verified incoming funds; demo top-ups are reported separately and are never counted as income.
+- **Budgets and goals** — optional overall and per-category monthly limits with 80% and 100% warnings, previous-month comparison, calculated (labelled **Estimate**) recommendations only after two complete months and ten payments, and user-recorded savings goals. Transfers, refunds, pending, failed, reversed, and top-up records never count as consumption.
+- **Categorization** — 18 categories with subcategories, driven first by persisted user corrections, then local merchant/description rules, payment metadata, an optional configured local classifier, and an optional LLM fallback. External AI is disabled by default, requires deployment configuration plus explicit user consent, and receives only a digit-masked merchant label, payment kind, and amount band. The categorization method and a rule-strength confidence are returned for every payment; saved corrections can apply to one payment or future matching merchants.
+- **Privacy and correctness** — all endpoints are authenticated and owner-scoped. Amounts are integer paise and INR-only; date boundaries use Asia/Kolkata local midnight. Failed, pending, reversed, internal-transfer, and demo top-up records are excluded from completed spending. No bank balance or unrecorded income is inferred, and no sensitive transaction text is written to logs.
+
+Analytics API (all under `/api/v1/analytics/`): `summary/`, `transactions/`, `categories/`, `trends/`, `merchants/`, `insights/`, `forecast/`, `anomalies/`, `reports/months/`, `reports/<year>/<month>/`, `reports/<year>/<month>/export.csv`, `budgets/`, `budgets/<id>/`, `goals/`, `goals/<id>/`, `transactions/<reference>/category/`, `corrections/`, `preferences/`, and `meta/`.
+
+For a populated local demonstration:
+
+```bash
+cd backend
+.venv/bin/python manage.py migrate
+.venv/bin/python manage.py seed_analytics_demo
+```
+
+The command creates `demo@onepay.test` / `OnePay!Demo2026` with four months of simulated payments, category budgets, and a savings goal. It is idempotent by default; pass `--force` to replace the generated demo activity. Cache entries are derived from the user's transaction/budget revision, so new or corrected records invalidate them automatically.
+
 ## Checks
 
 Frontend:

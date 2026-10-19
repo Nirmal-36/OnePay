@@ -179,6 +179,17 @@ if EMAIL_USE_TLS and EMAIL_USE_SSL:
     raise ImproperlyConfigured("EMAIL_USE_TLS and EMAIL_USE_SSL cannot both be enabled.")
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "OnePay <no-reply@onepay.local>")
 
+# Intelligent Spending Analysis. Local rules are always used. The optional
+# classifier hook and external LLM endpoint are opt-in and disabled by default.
+ANALYTICS_CACHE_SECONDS = int(os.environ.get("ANALYTICS_CACHE_SECONDS", "60"))
+ANALYTICS_CLASSIFIER_PATH = os.environ.get("ANALYTICS_CLASSIFIER_PATH", "").strip()
+ANALYTICS_EXTERNAL_LLM_ENABLED = env_bool("ANALYTICS_EXTERNAL_LLM_ENABLED", False)
+ANALYTICS_EXTERNAL_LLM_ENDPOINT = os.environ.get("ANALYTICS_EXTERNAL_LLM_ENDPOINT", "").strip()
+ANALYTICS_EXTERNAL_LLM_API_KEY = os.environ.get("ANALYTICS_EXTERNAL_LLM_API_KEY", "").strip()
+ANALYTICS_EXTERNAL_LLM_TIMEOUT = float(os.environ.get("ANALYTICS_EXTERNAL_LLM_TIMEOUT", "4"))
+if ANALYTICS_CACHE_SECONDS < 0:
+    raise ImproperlyConfigured("ANALYTICS_CACHE_SECONDS cannot be negative.")
+
 # LocMemCache is suitable for a single local dev process. Configure a shared Django
 # cache backend in multi-worker deployments so DRF's authentication throttles are global.
 CACHES = {
@@ -240,6 +251,8 @@ if not DEBUG:
         raise ImproperlyConfigured("Production API throttles require a shared cache backend.")
     if EMAIL_BACKEND == "django.core.mail.backends.console.EmailBackend":
         raise ImproperlyConfigured("Production must use a configured email delivery backend, not console output.")
+    if ANALYTICS_EXTERNAL_LLM_ENABLED and not ANALYTICS_EXTERNAL_LLM_ENDPOINT.startswith("https://"):
+        raise ImproperlyConfigured("ANALYTICS_EXTERNAL_LLM_ENDPOINT must be HTTPS when external AI is enabled.")
     if USE_X_FORWARDED_HOST and SECURE_PROXY_SSL_HEADER is None:
         raise ImproperlyConfigured("USE_X_FORWARDED_HOST requires an explicitly trusted proxy configuration.")
 

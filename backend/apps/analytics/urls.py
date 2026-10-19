@@ -1,8 +1,55 @@
 from django.urls import path
 
-from .views import SpendingSummaryView, SpendingTransactionsView
+from .views import (
+    AnalyticsMetaView,
+    AnomalyView,
+    BudgetCollectionView,
+    BudgetDetailView,
+    CategoryAnalyticsView,
+    CorrectionListView,
+    ForecastView,
+    GoalCollectionView,
+    GoalDetailView,
+    InsightListView,
+    MerchantAnalyticsView,
+    CustomRangeReportExportView,
+    MonthlyReportExportView,
+    MonthlyReportView,
+    PreferenceView,
+    ReportMonthsView,
+    SpendingSummaryView,
+    SpendingTransactionsView,
+    TransactionCategoryView,
+    TrendAnalyticsView,
+)
 
 urlpatterns = [
-    path("summary/", SpendingSummaryView.as_view(), name="spending-summary"),
-    path("transactions/", SpendingTransactionsView.as_view(), name="spending-transactions"),
+    path("summary/", SpendingSummaryView.as_view(), name="analytics-summary"),
+    path("transactions/", SpendingTransactionsView.as_view(), name="analytics-transactions"),
+    path("categories/", CategoryAnalyticsView.as_view(), name="analytics-categories"),
+    path("trends/", TrendAnalyticsView.as_view(), name="analytics-trends"),
+    path("merchants/", MerchantAnalyticsView.as_view(), name="analytics-merchants"),
+    path("insights/", InsightListView.as_view(), name="analytics-insights"),
+    path("forecast/", ForecastView.as_view(), name="analytics-forecast"),
+    path("anomalies/", AnomalyView.as_view(), name="analytics-anomalies"),
+    path("reports/months/", ReportMonthsView.as_view(), name="analytics-report-months"),
+    path("reports/export.csv", CustomRangeReportExportView.as_view(), name="analytics-report-range-export"),
+    path(
+        "reports/<int:year>/<int:month>/export.csv",
+        MonthlyReportExportView.as_view(),
+        name="analytics-report-export",
+    ),
+    path("reports/<int:year>/<int:month>/", MonthlyReportView.as_view(), name="analytics-report"),
+    path("budgets/", BudgetCollectionView.as_view(), name="analytics-budgets"),
+    path("budgets/<int:pk>/", BudgetDetailView.as_view(), name="analytics-budget"),
+    path("goals/", GoalCollectionView.as_view(), name="analytics-goals"),
+    path("goals/<int:pk>/", GoalDetailView.as_view(), name="analytics-goal"),
+    path(
+        "transactions/<str:reference>/category/",
+        TransactionCategoryView.as_view(),
+        name="analytics-transaction-category",
+    ),
+    path("corrections/", CorrectionListView.as_view(), name="analytics-corrections"),
+    path("preferences/", PreferenceView.as_view(), name="analytics-preferences"),
+    path("meta/", AnalyticsMetaView.as_view(), name="analytics-meta"),
 ]

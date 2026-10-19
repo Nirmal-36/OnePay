@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "apps.accounts.apps.AccountsConfig",
     "apps.payments.apps.PaymentsConfig",
     "apps.notifications.apps.NotificationsConfig",
+    "apps.analytics.apps.AnalyticsConfig",
 ]
 
 MIDDLEWARE = [

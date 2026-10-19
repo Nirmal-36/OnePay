@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bell, CircleHelp, House, LogOut, ReceiptText, ScanLine, Send, Settings2, ShieldCheck, Smartphone, UsersRound, WalletCards } from 'lucide-react';
+import { Bell, ChartPie, CircleHelp, House, LogOut, ReceiptText, ScanLine, Send, Settings2, ShieldCheck, Smartphone, UsersRound, WalletCards } from 'lucide-react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { apiErrorMessage } from '../api/auth';
 import { useAuth } from '../context/AuthContext';
@@ -14,6 +14,7 @@ const primaryLinks = [
   { to: '/recipients', label: 'Recipients', icon: UsersRound },
   { to: '/scan', label: 'Scan QR', icon: ScanLine },
   { to: '/transactions', label: 'Transactions', icon: ReceiptText },
+  { to: '/insights', label: 'Spending insights', icon: ChartPie },
   { to: '/bills', label: 'Recharge & bills', icon: Smartphone },
 ];
 
@@ -22,6 +23,7 @@ const mobileLinks = [
   { to: '/send', label: 'Pay', icon: Send },
   { to: '/scan', label: 'Scan', icon: ScanLine },
   { to: '/transactions', label: 'Activity', icon: ReceiptText },
+  { to: '/insights', label: 'Insights', icon: ChartPie },
   { to: '/profile', label: 'Profile', icon: Settings2 },
 ];
 
@@ -32,6 +34,7 @@ const titleForPath = (path: string): string => {
   if (path.endsWith('/receipt')) return 'Transaction receipt';
   if (path.startsWith('/transactions/') && path !== '/transactions') return 'Transaction details';
   if (path.startsWith('/transactions')) return 'Transaction history';
+  if (path.startsWith('/insights')) return 'Spending insights';
   if (path.startsWith('/recipients')) return 'Manage recipients';
   if (path.startsWith('/bills')) return 'Recharge & bills';
   if (path.startsWith('/profile')) return 'Your profile';

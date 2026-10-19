@@ -30,3 +30,6 @@ backend/.coverage
 
 # Local development database
 /backend/onepay-local.sqlite3
+
+# Local development database
+/backend/local.sqlite3

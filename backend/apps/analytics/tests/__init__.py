@@ -1,0 +1,1 @@
+"""Spending analytics test suite."""

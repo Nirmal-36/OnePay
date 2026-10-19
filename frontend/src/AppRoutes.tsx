@@ -18,6 +18,7 @@ const RecipientsPage = lazy(() => import('./pages/RecipientsPage'));
 const BillsPage = lazy(() => import('./pages/BillsPage'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 const NotificationsPage = lazy(() => import('./pages/NotificationsPage'));
+const SpendingInsightsPage = lazy(() => import('./pages/SpendingInsightsPage'));
 const HelpPage = lazy(() => import('./pages/HelpPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 
@@ -45,6 +46,7 @@ export default function AppRoutes() {
             <Route path="/transactions/:reference" element={<TransactionDetailPage />} />
             <Route path="/recipients" element={<RecipientsPage />} />
             <Route path="/bills" element={<BillsPage />} />
+            <Route path="/insights" element={<SpendingInsightsPage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/help" element={<HelpPage />} />
